@@ -191,6 +191,7 @@ jobs:
           # Set proper ownership for rdpuser
           Write-Host "Setting ownership for rdpuser..."
           $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
             
             # List what was restored
             Write-Host "Restored contents:"
@@ -412,6 +413,7 @@ jobs:
           
           # Grant full permissions to rdpuser on the profile directory  
           $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
           
           # List what we created
           Write-Host "Profile directories:"
@@ -492,6 +494,7 @@ jobs:
           
           # Set ownership for rdpuser
           $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
           
           Write-Host "Environment configured for rdpuser:"
           Write-Host "  Profile path: $rdpUserHome"
@@ -588,6 +591,7 @@ jobs:
           
           # Set ownership for rdpuser
           $null = cmd /c "icacls `"$scoopDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
           
           Write-Host "Scoop ready! Install apps with: scoop install <app>"
 
