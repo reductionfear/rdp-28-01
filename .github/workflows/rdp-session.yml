@@ -100,36 +100,58 @@ jobs:
             
             Write-Host "User data restored to $rdpUserHome"
             
-            # Patch config files to replace old path with new path
-            if ($oldUserHome -and ($oldUserHome -ne $rdpUserHome)) {
-              Write-Host "Patching config files: $oldUserHome -> $rdpUserHome"
-              
-              # Files that may contain hardcoded paths
-              $configFiles = @(
-                "$rdpUserHome\.clawdbot\clawdbot.json",
-                "$rdpUserHome\.clawdbot\agents\main\agent\auth-profiles.json",
-                "$rdpUserHome\.npmrc",
-                "$rdpUserHome\.gitconfig"
-              )
-              
-              foreach ($file in $configFiles) {
-                if (Test-Path $file) {
-                  $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
-                  if ($content -and $content.Contains($oldUserHome)) {
-                    # Replace both forward slash and backslash versions
-                    $oldPathBackslash = $oldUserHome
-                    $newPathBackslash = $rdpUserHome
-                    $oldPathForward = $oldUserHome -replace '\\', '/'
-                    $newPathForward = $rdpUserHome -replace '\\', '/'
-                    $oldPathEscaped = $oldUserHome -replace '\\', '\\\\'
-                    $newPathEscaped = $rdpUserHome -replace '\\', '\\\\'
-                    
-                    $content = $content -replace [regex]::Escape($oldPathEscaped), $newPathEscaped
-                    $content = $content -replace [regex]::Escape($oldPathBackslash), $newPathBackslash
-                    $content = $content -replace [regex]::Escape($oldPathForward), $newPathForward
-                    
+            # Patch config files to replace old/runner paths with rdpuser path
+            # Always patch common runner usernames, not just the saved oldUserHome
+            $pathsToReplace = @(
+              "C:\Users\runneradmin",
+              "C:\Users\runner", 
+              "C:\Users\ContainerAdministrator"
+            )
+            
+            # Also add oldUserHome if it's different from rdpUserHome
+            if ($oldUserHome -and ($oldUserHome -ne $rdpUserHome) -and ($pathsToReplace -notcontains $oldUserHome)) {
+              $pathsToReplace += $oldUserHome
+            }
+            
+            Write-Host "Will patch these paths to $rdpUserHome :"
+            $pathsToReplace | ForEach-Object { Write-Host "  - $_" }
+            
+            # Files that may contain hardcoded paths
+            $configFiles = @(
+              "$rdpUserHome\.clawdbot\clawdbot.json",
+              "$rdpUserHome\.clawdbot\agents\main\agent\auth-profiles.json",
+              "$rdpUserHome\.clawdbot\agents\main\agent.json",
+              "$rdpUserHome\.npmrc",
+              "$rdpUserHome\.gitconfig"
+            )
+            
+            foreach ($file in $configFiles) {
+              if (Test-Path $file) {
+                $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
+                if ($content) {
+                  $patched = $false
+                  
+                  foreach ($oldPath in $pathsToReplace) {
+                    if ($content.Contains($oldPath) -or $content.Contains(($oldPath -replace '\\', '/')) -or $content.Contains(($oldPath -replace '\\', '\\\\'))) {
+                      # Replace backslash, forward slash, and escaped versions
+                      $oldPathBackslash = $oldPath
+                      $newPathBackslash = $rdpUserHome
+                      $oldPathForward = $oldPath -replace '\\', '/'
+                      $newPathForward = $rdpUserHome -replace '\\', '/'
+                      $oldPathEscaped = $oldPath -replace '\\', '\\\\'
+                      $newPathEscaped = $rdpUserHome -replace '\\', '\\\\'
+                      
+                      $content = $content -replace [regex]::Escape($oldPathEscaped), $newPathEscaped
+                      $content = $content -replace [regex]::Escape($oldPathBackslash), $newPathBackslash
+                      $content = $content -replace [regex]::Escape($oldPathForward), $newPathForward
+                      
+                      $patched = $true
+                      Write-Host "  Patched $oldPath in: $file"
+                    }
+                  }
+                  
+                  if ($patched) {
                     Set-Content -Path $file -Value $content -NoNewline
-                    Write-Host "  Patched: $file"
                   }
                 }
               }
