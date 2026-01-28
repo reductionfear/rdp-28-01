@@ -240,6 +240,9 @@ jobs:
           [Environment]::SetEnvironmentVariable("CLAWDBOT_WORKSPACE", "$rdpUserHome\projects", "Machine")
           [Environment]::SetEnvironmentVariable("SCOOP", "$rdpUserHome\scoop", "Machine")
           
+          # Fix NPM prefix - Chocolatey sets NPM_CONFIG_PREFIX which overrides npm config
+          [Environment]::SetEnvironmentVariable("NPM_CONFIG_PREFIX", "$rdpUserHome\.npm-global", "Machine")
+          
           # Update PATH for rdpuser
           $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
           $newPaths = @(
@@ -258,6 +261,7 @@ jobs:
           Write-Host "  CLAWDBOT_STATE_DIR = $rdpUserHome\.clawdbot"
           Write-Host "  CLAWDBOT_WORKSPACE = $rdpUserHome\projects"
           Write-Host "  SCOOP = $rdpUserHome\scoop"
+          Write-Host "  NPM_CONFIG_PREFIX = $rdpUserHome\.npm-global"
           Write-Host "  PATH includes npm-global, scoop shims, and .local/bin"
 
       - name: Install Development Tools
