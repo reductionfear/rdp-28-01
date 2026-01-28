@@ -215,39 +215,77 @@ jobs:
           $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
           # Install common dev tools
-          choco install -y git vscode nodejs python3 7zip --no-progress
+          choco install -y git vscode nodejs-lts python3 7zip --no-progress
+          
+          # Refresh PATH again after nodejs install
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
           Write-Host "Development tools installed"
+
+      - name: Configure NPM for user-level global installs
+        shell: pwsh
+        run: |
+          $userHome = "C:\Users\rdpuser"
+          $npmGlobalDir = "$userHome\.npm-global"
+          $npmBinDir = "$npmGlobalDir\bin"
+          
+          # Create directories
+          New-Item -ItemType Directory -Path $npmGlobalDir -Force | Out-Null
+          New-Item -ItemType Directory -Path $npmBinDir -Force | Out-Null
+          
+          # Configure npm to use user directory for global packages
+          npm config set prefix $npmGlobalDir
+          
+          # Add npm global bin to PATH
+          $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          if ($currentPath -notlike "*$npmBinDir*") {
+            [Environment]::SetEnvironmentVariable("Path", "$npmBinDir;$currentPath", "User")
+          }
+          $env:PATH = "$npmBinDir;$env:PATH"
+          
+          Write-Host "NPM configured to install global packages to: $npmGlobalDir"
+          Write-Host "NPM bin directory added to PATH: $npmBinDir"
 
       - name: Install Custom Apps
         shell: pwsh
         run: |
-          Write-Host "Installing custom applications..."
+          Write-Host "Checking for custom applications..."
+          
+          $userHome = "C:\Users\rdpuser"
+          $npmBinDir = "$userHome\.npm-global\bin"
+          $localBin = "$userHome\.local\bin"
+          
+          # Ensure PATH includes npm global and local bin
+          $env:PATH = "$npmBinDir;$localBin;$env:PATH"
+          [Environment]::SetEnvironmentVariable("Path", "$npmBinDir;$localBin;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")
           
           # ============================================================
-          # MOLTBOT (clawdbot)
+          # MOLTBOT - Check if already installed (persisted from before)
           # ============================================================
-          Write-Host "Installing Moltbot..."
-          try {
-            # Skip onboarding in automated install (settings restored from persistence)
-            $env:CLAWDBOT_NO_ONBOARD = "1"
-            Invoke-WebRequest -useb https://molt.bot/install.ps1 | Invoke-Expression
-            Write-Host "Moltbot installed successfully"
-          } catch {
-            Write-Host "Warning: Moltbot installation failed: $_"
+          $moltbotExists = $false
+          
+          # Check various possible locations
+          if (Test-Path "$npmBinDir\clawdbot.cmd") { $moltbotExists = $true }
+          if (Test-Path "$localBin\clawdbot.cmd") { $moltbotExists = $true }
+          if (Get-Command clawdbot -ErrorAction SilentlyContinue) { $moltbotExists = $true }
+          
+          if ($moltbotExists) {
+            Write-Host "=============================================="
+            Write-Host "Moltbot FOUND (restored from previous session)"
+            Write-Host "=============================================="
+            Write-Host "No reinstall needed - ready to use!"
+          } else {
+            Write-Host "=============================================="
+            Write-Host "Moltbot not installed yet"
+            Write-Host "=============================================="
+            Write-Host ""
+            Write-Host "After connecting via RDP, run:"
+            Write-Host "  iwr -useb https://molt.bot/install.ps1 | iex"
+            Write-Host ""
+            Write-Host "It will persist across all future sessions!"
           }
           
-          # ============================================================
-          # ADD MORE CUSTOM APPS BELOW
-          # ============================================================
-          # 
-          # Example: Direct download
-          # $url = "https://example.com/installer.exe"
-          # Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\installer.exe" -UseBasicParsing
-          # Start-Process -FilePath "$env:TEMP\installer.exe" -ArgumentList "/S" -Wait
-          #
-          # Example: Chocolatey package
-          # choco install -y appname --no-progress
+          Write-Host "Custom apps step complete"
           # ============================================================
           
           Write-Host "Custom apps installation complete"
@@ -311,10 +349,12 @@ jobs:
             "`$userHome\.ssh",
             "`$userHome\.gitconfig",
             "`$userHome\.vscode",
-            "`$userHome\.local",           # Moltbot wrapper lives here
+            "`$userHome\.local",           # Moltbot wrapper + bin
+            "`$userHome\.npm-global",      # NPM global packages (includes Moltbot!)
+            "`$userHome\.npmrc",           # NPM config
             "`$userHome\clawdbot",         # Moltbot git install directory
-            "`$userHome\.clawdbot",        # Moltbot config directory (if exists)
-            "`$userHome\.config\clawdbot"  # Alternative config location
+            "`$userHome\.clawdbot",        # Moltbot config directory
+            "`$userHome\.config"           # Config directory (clawdbot, etc)
           )
           
           # AppData directories to persist (app settings)
