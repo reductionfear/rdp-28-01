@@ -227,24 +227,58 @@ jobs:
         run: |
           $userHome = "C:\Users\rdpuser"
           $npmGlobalDir = "$userHome\.npm-global"
-          $npmBinDir = "$npmGlobalDir\bin"
+          $npmBinDir = "$npmGlobalDir"
           
           # Create directories
           New-Item -ItemType Directory -Path $npmGlobalDir -Force | Out-Null
-          New-Item -ItemType Directory -Path $npmBinDir -Force | Out-Null
           
           # Configure npm to use user directory for global packages
           npm config set prefix $npmGlobalDir
           
-          # Add npm global bin to PATH
+          # Add npm global bin to PATH (Windows npm uses the prefix dir directly, not /bin)
           $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-          if ($currentPath -notlike "*$npmBinDir*") {
-            [Environment]::SetEnvironmentVariable("Path", "$npmBinDir;$currentPath", "User")
+          if ($currentPath -notlike "*$npmGlobalDir*") {
+            [Environment]::SetEnvironmentVariable("Path", "$npmGlobalDir;$currentPath", "User")
           }
-          $env:PATH = "$npmBinDir;$env:PATH"
+          $env:PATH = "$npmGlobalDir;$env:PATH"
           
+          # Verify npm is working
+          Write-Host "NPM version: $(npm --version)"
+          Write-Host "NPM prefix: $(npm config get prefix)"
           Write-Host "NPM configured to install global packages to: $npmGlobalDir"
-          Write-Host "NPM bin directory added to PATH: $npmBinDir"
+
+      - name: Install Scoop (persistent package manager)
+        shell: pwsh
+        run: |
+          $userHome = "C:\Users\rdpuser"
+          $scoopDir = "$userHome\scoop"
+          
+          # Check if Scoop already exists (restored from previous session)
+          if (Test-Path "$scoopDir\shims\scoop.ps1") {
+            Write-Host "Scoop already installed (restored from previous session)"
+            $env:SCOOP = $scoopDir
+            $env:PATH = "$scoopDir\shims;$env:PATH"
+            [Environment]::SetEnvironmentVariable("SCOOP", $scoopDir, "User")
+            [Environment]::SetEnvironmentVariable("Path", "$scoopDir\shims;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")
+          } else {
+            Write-Host "Installing Scoop to user directory..."
+            
+            # Set Scoop to install in user directory
+            $env:SCOOP = $scoopDir
+            [Environment]::SetEnvironmentVariable("SCOOP", $scoopDir, "User")
+            
+            # Install Scoop
+            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+            Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+            
+            Write-Host "Scoop installed successfully"
+          }
+          
+          # Install common tools that Moltbot skills need
+          Write-Host "Installing common tools via Scoop..."
+          scoop install git go ffmpeg yt-dlp --no-cache 2>$null
+          
+          Write-Host "Scoop ready! Install apps with: scoop install <app>"
 
       - name: Install Custom Apps
         shell: pwsh
@@ -252,20 +286,21 @@ jobs:
           Write-Host "Checking for custom applications..."
           
           $userHome = "C:\Users\rdpuser"
-          $npmBinDir = "$userHome\.npm-global\bin"
+          $npmGlobalDir = "$userHome\.npm-global"
           $localBin = "$userHome\.local\bin"
+          $scoopShims = "$userHome\scoop\shims"
           
-          # Ensure PATH includes npm global and local bin
-          $env:PATH = "$npmBinDir;$localBin;$env:PATH"
-          [Environment]::SetEnvironmentVariable("Path", "$npmBinDir;$localBin;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")
+          # Ensure PATH includes all custom locations
+          $env:PATH = "$npmGlobalDir;$localBin;$scoopShims;$env:PATH"
+          [Environment]::SetEnvironmentVariable("Path", "$npmGlobalDir;$localBin;$scoopShims;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")
           
           # ============================================================
-          # MOLTBOT - Check if already installed (persisted from before)
+          # MOLTBOT - Check if already installed
           # ============================================================
           $moltbotExists = $false
           
-          # Check various possible locations
-          if (Test-Path "$npmBinDir\clawdbot.cmd") { $moltbotExists = $true }
+          if (Test-Path "$npmGlobalDir\clawdbot.cmd") { $moltbotExists = $true }
+          if (Test-Path "$npmGlobalDir\node_modules\clawdbot") { $moltbotExists = $true }
           if (Test-Path "$localBin\clawdbot.cmd") { $moltbotExists = $true }
           if (Get-Command clawdbot -ErrorAction SilentlyContinue) { $moltbotExists = $true }
           
@@ -285,6 +320,17 @@ jobs:
             Write-Host "It will persist across all future sessions!"
           }
           
+          # ============================================================
+          # SCOOP STATUS
+          # ============================================================
+          Write-Host ""
+          Write-Host "Scoop package manager ready!"
+          Write-Host "Install Windows apps with: scoop install <app>"
+          Write-Host "All scoop apps persist across sessions!"
+          Write-Host ""
+          Write-Host "Example: scoop install ffmpeg yt-dlp go python"
+          
+          Write-Host ""
           Write-Host "Custom apps step complete"
           # ============================================================
           
@@ -352,6 +398,7 @@ jobs:
             "`$userHome\.local",           # Moltbot wrapper + bin
             "`$userHome\.npm-global",      # NPM global packages (includes Moltbot!)
             "`$userHome\.npmrc",           # NPM config
+            "`$userHome\scoop",            # Scoop + all scoop-installed apps!
             "`$userHome\clawdbot",         # Moltbot git install directory
             "`$userHome\.clawdbot",        # Moltbot config directory
             "`$userHome\.config"           # Config directory (clawdbot, etc)
