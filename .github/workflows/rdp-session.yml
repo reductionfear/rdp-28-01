@@ -190,7 +190,7 @@ jobs:
             
             # Set proper ownership for rdpuser
             Write-Host "Setting ownership for rdpuser..."
-            icacls $rdpUserHome /grant "rdpuser:(OI)(CI)F" /T /Q 2>$null
+            icacls $rdpUserHome /grant "rdpuser:(OI)(CI)F" /T /Q 2>$null; $true
             
             # List what was restored
             Write-Host "Restored contents:"
@@ -411,7 +411,7 @@ jobs:
           }
           
           # Grant full permissions to rdpuser on the profile directory  
-          icacls $rdpUserHome /grant "rdpuser:(OI)(CI)F" /T /Q 2>$null
+          icacls $rdpUserHome /grant "rdpuser:(OI)(CI)F" /T /Q 2>$null; $true
           
           # List what we created
           Write-Host "Profile directories:"
@@ -491,7 +491,7 @@ jobs:
           [Environment]::SetEnvironmentVariable("Path", $currentPath, "Machine")
           
           # Set ownership for rdpuser
-          icacls $rdpUserHome /grant "rdpuser:(OI)(CI)F" /T /Q 2>$null
+          icacls $rdpUserHome /grant "rdpuser:(OI)(CI)F" /T /Q 2>$null; $true
           
           Write-Host "Environment configured for rdpuser:"
           Write-Host "  Profile path: $rdpUserHome"
@@ -587,7 +587,7 @@ jobs:
           scoop install git go ffmpeg yt-dlp --no-cache 2>$null
           
           # Set ownership for rdpuser
-          icacls $scoopDir /grant "rdpuser:(OI)(CI)F" /T /Q 2>$null
+          icacls $scoopDir /grant "rdpuser:(OI)(CI)F" /T /Q 2>$null; $true
           
           Write-Host "Scoop ready! Install apps with: scoop install <app>"
 
