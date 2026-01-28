@@ -1,0 +1,484 @@
+name: Infinite RDP Session
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: 'Session identifier (auto-generated for chains)'
+        required: false
+        default: ''
+      chain_count:
+        description: 'Chain iteration counter'
+        required: false
+        default: '0'
+  repository_dispatch:
+    types: [chain-rdp]
+
+env:
+  SESSION_TIMEOUT_MINUTES: 330  # 5.5 hours (GitHub limit is 6h)
+  CHAIN_BUFFER_MINUTES: 15     # Start new session 15 min before timeout
+  PERSIST_DIR: C:\rdp-persist  # Directory for persistent data
+
+jobs:
+  rdp-session:
+    runs-on: windows-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate session info
+        id: session
+        shell: pwsh
+        run: |
+          $sessionId = "${{ github.event.inputs.session_id }}"
+          if ([string]::IsNullOrEmpty($sessionId)) {
+            $sessionId = [guid]::NewGuid().ToString().Substring(0,8)
+          }
+          $chainCount = [int]"${{ github.event.inputs.chain_count }}"
+          if ($chainCount -eq 0 -and "${{ github.event_name }}" -eq "repository_dispatch") {
+            $chainCount = ${{ github.event.client_payload.chain_count }}
+          }
+          
+          echo "SESSION_ID=$sessionId" >> $env:GITHUB_OUTPUT
+          echo "CHAIN_COUNT=$chainCount" >> $env:GITHUB_OUTPUT
+          echo "START_TIME=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')" >> $env:GITHUB_OUTPUT
+          
+          Write-Host "Session ID: $sessionId"
+          Write-Host "Chain iteration: $chainCount"
+
+      # ========== RESTORE PERSISTED DATA ==========
+      - name: Download persisted data
+        if: ${{ github.event.inputs.chain_count != '0' || github.event_name == 'repository_dispatch' }}
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: rdp-session.yml
+          name: rdp-session-data-${{ steps.session.outputs.SESSION_ID }}
+          path: ${{ env.PERSIST_DIR }}
+          if_no_artifact_found: warn
+        continue-on-error: true
+
+      - name: Restore user data
+        shell: pwsh
+        run: |
+          $persistDir = "${{ env.PERSIST_DIR }}"
+          $userHome = "C:\Users\rdpuser"
+          
+          if (Test-Path "$persistDir\userdata.zip") {
+            Write-Host "Restoring persisted user data..."
+            
+            # Create user home if it doesn't exist yet
+            New-Item -ItemType Directory -Path $userHome -Force | Out-Null
+            
+            # Extract user data
+            Expand-Archive -Path "$persistDir\userdata.zip" -DestinationPath $userHome -Force
+            
+            Write-Host "User data restored successfully"
+          } else {
+            Write-Host "No persisted data found (first session or artifact expired)"
+          }
+
+      # ========== TAILSCALE SETUP ==========
+      - name: Install Tailscale
+        shell: pwsh
+        run: |
+          Write-Host "Installing Tailscale..."
+          
+          # Download Tailscale MSI
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $installer = "$env:TEMP\tailscale-setup.msi"
+          
+          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+          
+          # Silent install
+          Start-Process msiexec.exe -ArgumentList "/i", $installer, "/quiet", "/norestart" -Wait
+          
+          # Add to PATH
+          $env:PATH += ";C:\Program Files\Tailscale"
+          echo "C:\Program Files\Tailscale" >> $env:GITHUB_PATH
+          
+          Write-Host "Tailscale installed successfully"
+
+      - name: Connect to Tailscale
+        shell: pwsh
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
+          $hostname = "gh-rdp-$sessionId"
+          
+          Write-Host "Connecting to Tailscale as: $hostname"
+          
+          # Start Tailscale service
+          Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          
+          # Authenticate with Tailscale
+          # Note: Tags are embedded in the auth key, not passed here
+          # If you need to override, use: --advertise-tags=tag:github-runner
+          & "C:\Program Files\Tailscale\tailscale.exe" up `
+            --authkey="$env:TAILSCALE_AUTHKEY" `
+            --hostname="$hostname" `
+            --accept-routes `
+            --accept-dns
+          
+          Start-Sleep -Seconds 10
+          
+          # Get and display Tailscale IP
+          $status = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          Write-Host "=========================================="
+          Write-Host "TAILSCALE IP: $status"
+          Write-Host "HOSTNAME: $hostname"
+          Write-Host "=========================================="
+          
+          # Save IP for later use
+          echo "TAILSCALE_IP=$status" >> $env:GITHUB_OUTPUT
+
+      # ========== RDP SETUP ==========
+      - name: Configure RDP Access
+        shell: pwsh
+        run: |
+          Write-Host "Configuring RDP access..."
+          
+          # Enable RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          
+          # Configure firewall for RDP
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          
+          # Allow RDP through Windows Firewall
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=tcp localport=3389
+          
+          # Set Network Level Authentication (optional, more secure)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+          
+          Write-Host "RDP configured successfully"
+
+      - name: Create RDP User
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          $username = "rdpuser"
+          $password = $env:RDP_PASSWORD
+          
+          if ([string]::IsNullOrEmpty($password)) {
+            # Generate random password if not provided
+            $password = -join ((65..90) + (97..122) + (48..57) + (33,35,36,37,38,42) | Get-Random -Count 16 | ForEach-Object {[char]$_})
+            Write-Host "Generated password: $password"
+          }
+          
+          # Create user
+          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          
+          try {
+            New-LocalUser -Name $username -Password $securePassword -FullName "RDP User" -Description "GitHub Actions RDP User" -PasswordNeverExpires
+          } catch {
+            # User might already exist, update password
+            Set-LocalUser -Name $username -Password $securePassword
+          }
+          
+          # Add to necessary groups
+          Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
+          
+          Write-Host "=========================================="
+          Write-Host "RDP CREDENTIALS"
+          Write-Host "Username: $username"
+          Write-Host "Password: (check secrets or generated above)"
+          Write-Host "=========================================="
+
+      - name: Install Development Tools
+        shell: pwsh
+        run: |
+          Write-Host "Installing development tools..."
+          
+          # Install Chocolatey
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          
+          # Refresh PATH
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          
+          # Install common dev tools
+          choco install -y git vscode nodejs python3 7zip --no-progress
+          
+          Write-Host "Development tools installed"
+
+      - name: Install Custom Apps
+        shell: pwsh
+        run: |
+          Write-Host "Installing custom applications..."
+          
+          # ============================================================
+          # MOLTBOT (clawdbot)
+          # ============================================================
+          Write-Host "Installing Moltbot..."
+          try {
+            # Skip onboarding in automated install (settings restored from persistence)
+            $env:CLAWDBOT_NO_ONBOARD = "1"
+            Invoke-WebRequest -useb https://molt.bot/install.ps1 | Invoke-Expression
+            Write-Host "Moltbot installed successfully"
+          } catch {
+            Write-Host "Warning: Moltbot installation failed: $_"
+          }
+          
+          # ============================================================
+          # ADD MORE CUSTOM APPS BELOW
+          # ============================================================
+          # 
+          # Example: Direct download
+          # $url = "https://example.com/installer.exe"
+          # Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\installer.exe" -UseBasicParsing
+          # Start-Process -FilePath "$env:TEMP\installer.exe" -ArgumentList "/S" -Wait
+          #
+          # Example: Chocolatey package
+          # choco install -y appname --no-progress
+          # ============================================================
+          
+          Write-Host "Custom apps installation complete"
+
+      - name: Display Connection Info
+        id: connection
+        shell: pwsh
+        run: |
+          $tailscaleIp = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
+          $chainCount = "${{ steps.session.outputs.CHAIN_COUNT }}"
+          
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "       RDP SESSION READY"
+          Write-Host "=============================================="
+          Write-Host ""
+          Write-Host "Session ID:    $sessionId"
+          Write-Host "Chain Count:   $chainCount"
+          Write-Host "Tailscale IP:  $tailscaleIp"
+          Write-Host "Hostname:      gh-rdp-$sessionId"
+          Write-Host ""
+          Write-Host "Connect via RDP:"
+          Write-Host "  Address:  $tailscaleIp:3389"
+          Write-Host "  -or-      gh-rdp-$sessionId:3389"
+          Write-Host "  Username: rdpuser"
+          Write-Host "  Password: (from RDP_PASSWORD secret)"
+          Write-Host ""
+          Write-Host "Persistent directories (auto-saved):"
+          Write-Host "  C:\Users\rdpuser\projects"
+          Write-Host "  C:\Users\rdpuser\Documents"
+          Write-Host "  C:\Users\rdpuser\.ssh"
+          Write-Host ""
+          Write-Host "Session will auto-chain in ~${{ env.SESSION_TIMEOUT_MINUTES }} minutes"
+          Write-Host "=============================================="
+
+      # ========== AUTO-SAVE SCHEDULER ==========
+      - name: Setup auto-save scheduled task
+        shell: pwsh
+        run: |
+          $persistDir = "${{ env.PERSIST_DIR }}"
+          $userHome = "C:\Users\rdpuser"
+          
+          # Create persist directory
+          New-Item -ItemType Directory -Path $persistDir -Force | Out-Null
+          
+          # Create save script
+          $saveScript = @"
+          `$persistDir = "$persistDir"
+          `$userHome = "$userHome"
+          `$appData = "`$userHome\AppData"
+          `$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
+          
+          Write-Host "[`$timestamp] Auto-saving user data..."
+          
+          # Directories to persist (user files)
+          `$dirsToSave = @(
+            "`$userHome\projects",
+            "`$userHome\Documents",
+            "`$userHome\Desktop",
+            "`$userHome\.ssh",
+            "`$userHome\.gitconfig",
+            "`$userHome\.vscode",
+            "`$userHome\.local",           # Moltbot wrapper lives here
+            "`$userHome\clawdbot",         # Moltbot git install directory
+            "`$userHome\.clawdbot",        # Moltbot config directory (if exists)
+            "`$userHome\.config\clawdbot"  # Alternative config location
+          )
+          
+          # AppData directories to persist (app settings)
+          # Add your app's AppData folders here
+          `$appDataToSave = @(
+            "`$appData\Roaming\Code",           # VS Code settings
+            "`$appData\Roaming\npm",            # NPM global packages/config
+            "`$appData\Roaming\npm-cache",      # NPM cache
+            "`$appData\Local\Programs",         # Some apps install here
+            "`$appData\Roaming\clawdbot",       # Moltbot settings
+            "`$appData\Local\clawdbot",         # Moltbot local data
+            "`$appData\Roaming\Moltbot",        # Moltbot settings (alt name)
+            "`$appData\Local\pnpm",             # pnpm (used by Moltbot)
+            "`$appData\Local\pnpm-cache"        # pnpm cache
+            # Add more app folders as needed:
+            # "`$appData\Roaming\YourApp",
+            # "`$appData\Local\YourApp"
+          )
+          
+          # Create temp directory for backup
+          `$tempBackup = "`$env:TEMP\rdp-backup-`$timestamp"
+          New-Item -ItemType Directory -Path `$tempBackup -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$tempBackup\AppData\Roaming" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$tempBackup\AppData\Local" -Force | Out-Null
+          
+          # Save user directories
+          foreach (`$dir in `$dirsToSave) {
+            if (Test-Path `$dir) {
+              `$name = Split-Path `$dir -Leaf
+              Copy-Item -Path `$dir -Destination "`$tempBackup\`$name" -Recurse -Force -ErrorAction SilentlyContinue
+              Write-Host "  Saved: `$name"
+            }
+          }
+          
+          # Save AppData directories
+          foreach (`$dir in `$appDataToSave) {
+            if (Test-Path `$dir) {
+              `$relativePath = `$dir -replace [regex]::Escape("`$userHome\"), ""
+              `$destPath = "`$tempBackup\`$relativePath"
+              `$destParent = Split-Path `$destPath -Parent
+              New-Item -ItemType Directory -Path `$destParent -Force -ErrorAction SilentlyContinue | Out-Null
+              Copy-Item -Path `$dir -Destination `$destPath -Recurse -Force -ErrorAction SilentlyContinue
+              Write-Host "  Saved: `$relativePath"
+            }
+          }
+          
+          # Create zip archive
+          if (Test-Path "`$tempBackup\*") {
+            Compress-Archive -Path "`$tempBackup\*" -DestinationPath "`$persistDir\userdata.zip" -Force
+            Write-Host "Data saved to `$persistDir\userdata.zip"
+          }
+          
+          # Cleanup
+          Remove-Item -Path `$tempBackup -Recurse -Force -ErrorAction SilentlyContinue
+          "@
+          
+          $saveScriptPath = "$persistDir\auto-save.ps1"
+          $saveScript | Out-File -FilePath $saveScriptPath -Encoding UTF8
+          
+          # Schedule auto-save every 30 minutes
+          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$saveScriptPath`""
+          $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 30)
+          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+          
+          Register-ScheduledTask -TaskName "RDPAutoSave" -Action $action -Trigger $trigger -Settings $settings -Force
+          
+          Write-Host "Auto-save scheduled every 30 minutes"
+
+      - name: Schedule chain trigger
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          $chainMinutes = ${{ env.SESSION_TIMEOUT_MINUTES }} - ${{ env.CHAIN_BUFFER_MINUTES }}
+          $persistDir = "${{ env.PERSIST_DIR }}"
+          
+          Write-Host "Chain trigger scheduled in $chainMinutes minutes"
+          
+          # Create scheduled task to save data and trigger next workflow
+          $script = @"
+          # First, run final save
+          Write-Host "Running final data save before chain..."
+          & powershell.exe -ExecutionPolicy Bypass -File "$persistDir\auto-save.ps1"
+          
+          Start-Sleep -Seconds 10
+          
+          # Trigger next workflow
+          `$headers = @{
+            "Authorization" = "Bearer $env:GH_TOKEN"
+            "Accept" = "application/vnd.github.v3+json"
+          }
+          
+          `$body = @{
+            event_type = "chain-rdp"
+            client_payload = @{
+              session_id = "${{ steps.session.outputs.SESSION_ID }}"
+              chain_count = $([int]"${{ steps.session.outputs.CHAIN_COUNT }}" + 1)
+            }
+          } | ConvertTo-Json
+          
+          Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/dispatches" -Method Post -Headers `$headers -Body `$body -ContentType "application/json"
+          Write-Host "Next session triggered!"
+          "@
+          
+          $scriptPath = "$env:TEMP\chain-trigger.ps1"
+          $script | Out-File -FilePath $scriptPath -Encoding UTF8
+          
+          # Schedule the trigger
+          $triggerTime = (Get-Date).AddMinutes($chainMinutes)
+          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`""
+          $trigger = New-ScheduledTaskTrigger -Once -At $triggerTime
+          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+          
+          Register-ScheduledTask -TaskName "ChainRDP" -Action $action -Trigger $trigger -Settings $settings -Force
+          
+          Write-Host "Chain scheduled for: $triggerTime"
+
+      - name: Keep session alive
+        shell: pwsh
+        run: |
+          $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
+          
+          Write-Host "Keeping session alive until: $endTime"
+          Write-Host "Press Ctrl+C in GitHub Actions to manually stop"
+          
+          while ((Get-Date) -lt $endTime) {
+            # Heartbeat
+            $remaining = ($endTime - (Get-Date)).TotalMinutes
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session active - $([math]::Round($remaining)) min remaining"
+            
+            # Check Tailscale connection
+            $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
+            if ($status.BackendState -ne "Running") {
+              Write-Host "Tailscale disconnected, reconnecting..."
+              & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAILSCALE_AUTHKEY }}"
+            }
+            
+            # Prevent screen lock/idle
+            Add-Type -AssemblyName System.Windows.Forms
+            [System.Windows.Forms.Cursor]::Position = [System.Windows.Forms.Cursor]::Position
+            
+            Start-Sleep -Seconds 300  # 5 minute intervals
+          }
+          
+          Write-Host "Session timeout reached, next chain should be starting..."
+
+      # ========== SAVE DATA BEFORE EXIT ==========
+      - name: Final save before exit
+        if: always()
+        shell: pwsh
+        run: |
+          $persistDir = "${{ env.PERSIST_DIR }}"
+          
+          Write-Host "Running final save..."
+          
+          if (Test-Path "$persistDir\auto-save.ps1") {
+            & powershell.exe -ExecutionPolicy Bypass -File "$persistDir\auto-save.ps1"
+          }
+
+      - name: Upload persisted data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdp-session-data-${{ steps.session.outputs.SESSION_ID }}
+          path: ${{ env.PERSIST_DIR }}/userdata.zip
+          retention-days: 7
+          if-no-files-found: warn
+          overwrite: true
+
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "Cleaning up session..."
+          
+          # Logout from Tailscale (optional - keeps device in network for reconnection)
+          # & "C:\Program Files\Tailscale\tailscale.exe" logout
+          
+          Write-Host "Session ended gracefully"

@@ -1,0 +1,45 @@
+name: Manual Chain Trigger
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: 'Existing session ID to continue (leave empty for new)'
+        required: false
+        default: ''
+      stop_session:
+        description: 'Stop the session chain'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop Session
+        if: ${{ github.event.inputs.stop_session == 'true' }}
+        run: |
+          echo "Session chain stopped by user"
+          echo "To start a new session, run this workflow with stop_session=false"
+          exit 0
+
+      - name: Trigger RDP Session
+        if: ${{ github.event.inputs.stop_session != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          SESSION_ID="${{ github.event.inputs.session_id }}"
+          if [ -z "$SESSION_ID" ]; then
+            SESSION_ID=$(openssl rand -hex 4)
+          fi
+          
+          echo "Triggering RDP session: $SESSION_ID"
+          
+          gh workflow run rdp-session.yml \
+            --repo ${{ github.repository }} \
+            -f session_id="$SESSION_ID" \
+            -f chain_count="0"
+          
+          echo "Session triggered! Check the Actions tab for the running workflow."
+          echo "Session ID: $SESSION_ID"
