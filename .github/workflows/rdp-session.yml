@@ -18,7 +18,6 @@ env:
   SESSION_TIMEOUT_MINUTES: 330  # 5.5 hours (GitHub limit is 6h)
   CHAIN_BUFFER_MINUTES: 15     # Start new session 15 min before timeout
   PERSIST_DIR: C:\rdp-persist  # Directory for persistent data
-  RDP_USER_HOME: C:\Users\rdpuser  # Fixed path for RDP user (never changes)
 
 jobs:
   rdp-session:
@@ -77,23 +76,60 @@ jobs:
         run: |
           $persistDir = "${{ env.PERSIST_DIR }}"
           
-          # ALWAYS use the fixed rdpuser path - this is the key fix!
-          # The runner user (rdpuser.runnerXXX) changes each session,
-          # but C:\Users\rdpuser is stable and what the RDP user sees
-          $userHome = "${{ env.RDP_USER_HOME }}"
+          # Use the CURRENT runner's USERPROFILE (dynamic each session)
+          $userHome = $env:USERPROFILE
           
-          Write-Host "Restoring to FIXED user home: $userHome"
-          
-          # Create the rdpuser home directory if it doesn't exist
-          New-Item -ItemType Directory -Path $userHome -Force | Out-Null
+          Write-Host "Current USERPROFILE: $userHome"
           
           if (Test-Path "$persistDir\userdata.zip") {
             Write-Host "Restoring persisted user data..."
             
-            # Extract user data to the FIXED rdpuser directory
+            # Read the OLD userprofile path from previous session
+            $oldUserHome = ""
+            if (Test-Path "$persistDir\userprofile.txt") {
+              $oldUserHome = Get-Content "$persistDir\userprofile.txt" -Raw
+              $oldUserHome = $oldUserHome.Trim()
+              Write-Host "Previous session USERPROFILE was: $oldUserHome"
+            }
+            
+            # Extract user data to current USERPROFILE
             Expand-Archive -Path "$persistDir\userdata.zip" -DestinationPath $userHome -Force
             
-            Write-Host "User data restored successfully to $userHome"
+            Write-Host "User data restored to $userHome"
+            
+            # Patch config files to replace old path with new path
+            if ($oldUserHome -and ($oldUserHome -ne $userHome)) {
+              Write-Host "Patching config files: $oldUserHome -> $userHome"
+              
+              # Files that may contain hardcoded paths
+              $configFiles = @(
+                "$userHome\.clawdbot\clawdbot.json",
+                "$userHome\.clawdbot\agents\main\agent\auth-profiles.json",
+                "$userHome\.npmrc"
+              )
+              
+              foreach ($file in $configFiles) {
+                if (Test-Path $file) {
+                  $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
+                  if ($content -and $content.Contains($oldUserHome)) {
+                    # Replace both forward slash and backslash versions
+                    $oldPathBackslash = $oldUserHome
+                    $newPathBackslash = $userHome
+                    $oldPathForward = $oldUserHome -replace '\\', '/'
+                    $newPathForward = $userHome -replace '\\', '/'
+                    $oldPathEscaped = $oldUserHome -replace '\\', '\\\\'
+                    $newPathEscaped = $userHome -replace '\\', '\\\\'
+                    
+                    $content = $content -replace [regex]::Escape($oldPathEscaped), $newPathEscaped
+                    $content = $content -replace [regex]::Escape($oldPathBackslash), $newPathBackslash
+                    $content = $content -replace [regex]::Escape($oldPathForward), $newPathForward
+                    
+                    Set-Content -Path $file -Value $content -NoNewline
+                    Write-Host "  Patched: $file"
+                  }
+                }
+              }
+            }
             
             # List what was restored
             Write-Host "Restored contents:"
@@ -212,43 +248,36 @@ jobs:
           Write-Host "Password: (check secrets or generated above)"
           Write-Host "=========================================="
 
-      - name: Configure rdpuser environment for Moltbot
+      - name: Configure environment for Moltbot
         shell: pwsh
         run: |
-          $rdpUserHome = "${{ env.RDP_USER_HOME }}"
+          # Use CURRENT runner's USERPROFILE (dynamic)
+          $userHome = $env:USERPROFILE
           
-          Write-Host "Configuring rdpuser environment variables..."
+          Write-Host "Configuring environment for: $userHome"
           
-          # Create rdpuser directories
-          New-Item -ItemType Directory -Path $rdpUserHome -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.clawdbot" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\scoop" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
+          # Create directories
+          New-Item -ItemType Directory -Path "$userHome\projects" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$userHome\.clawdbot" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$userHome\.npm-global" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$userHome\scoop" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$userHome\AppData\Roaming" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$userHome\AppData\Local" -Force | Out-Null
           
-          # Set environment variables for rdpuser via registry
-          # These will be available when rdpuser logs in via RDP
-          $regPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
-          
-          # Set user environment variables directly for rdpuser
-          $userEnvPath = "Registry::HKEY_USERS\.DEFAULT\Environment"
-          
-          # Also set machine-wide environment variables as fallback
-          [Environment]::SetEnvironmentVariable("CLAWDBOT_STATE_DIR", "$rdpUserHome\.clawdbot", "Machine")
-          [Environment]::SetEnvironmentVariable("CLAWDBOT_WORKSPACE", "$rdpUserHome\projects", "Machine")
-          [Environment]::SetEnvironmentVariable("SCOOP", "$rdpUserHome\scoop", "Machine")
+          # Set machine-wide environment variables pointing to CURRENT userprofile
+          [Environment]::SetEnvironmentVariable("CLAWDBOT_STATE_DIR", "$userHome\.clawdbot", "Machine")
+          [Environment]::SetEnvironmentVariable("CLAWDBOT_WORKSPACE", "$userHome\projects", "Machine")
+          [Environment]::SetEnvironmentVariable("SCOOP", "$userHome\scoop", "Machine")
           
           # Fix NPM prefix - Chocolatey sets NPM_CONFIG_PREFIX which overrides npm config
-          [Environment]::SetEnvironmentVariable("NPM_CONFIG_PREFIX", "$rdpUserHome\.npm-global", "Machine")
+          [Environment]::SetEnvironmentVariable("NPM_CONFIG_PREFIX", "$userHome\.npm-global", "Machine")
           
-          # Update PATH for rdpuser
+          # Update PATH
           $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
           $newPaths = @(
-            "$rdpUserHome\.npm-global",
-            "$rdpUserHome\scoop\shims",
-            "$rdpUserHome\.local\bin"
+            "$userHome\.npm-global",
+            "$userHome\scoop\shims",
+            "$userHome\.local\bin"
           )
           foreach ($p in $newPaths) {
             if ($currentPath -notlike "*$p*") {
@@ -257,11 +286,11 @@ jobs:
           }
           [Environment]::SetEnvironmentVariable("Path", $currentPath, "Machine")
           
-          Write-Host "Environment configured for rdpuser:"
-          Write-Host "  CLAWDBOT_STATE_DIR = $rdpUserHome\.clawdbot"
-          Write-Host "  CLAWDBOT_WORKSPACE = $rdpUserHome\projects"
-          Write-Host "  SCOOP = $rdpUserHome\scoop"
-          Write-Host "  NPM_CONFIG_PREFIX = $rdpUserHome\.npm-global"
+          Write-Host "Environment configured:"
+          Write-Host "  CLAWDBOT_STATE_DIR = $userHome\.clawdbot"
+          Write-Host "  CLAWDBOT_WORKSPACE = $userHome\projects"
+          Write-Host "  SCOOP = $userHome\scoop"
+          Write-Host "  NPM_CONFIG_PREFIX = $userHome\.npm-global"
           Write-Host "  PATH includes npm-global, scoop shims, and .local/bin"
 
       - name: Install Development Tools
@@ -288,24 +317,19 @@ jobs:
       - name: Configure NPM for user-level global installs
         shell: pwsh
         run: |
-          # Use FIXED rdpuser path
-          $userHome = "${{ env.RDP_USER_HOME }}"
+          # Use CURRENT runner's USERPROFILE
+          $userHome = $env:USERPROFILE
           $npmGlobalDir = "$userHome\.npm-global"
-          $npmBinDir = "$npmGlobalDir"
           
-          Write-Host "Configuring NPM for user home: $userHome"
+          Write-Host "Configuring NPM for: $userHome"
           
           # Create directories
           New-Item -ItemType Directory -Path $npmGlobalDir -Force | Out-Null
           
-          # Configure npm to use user directory for global packages
-          npm config set prefix $npmGlobalDir
+          # Set env var for this session
+          $env:NPM_CONFIG_PREFIX = $npmGlobalDir
           
-          # Add npm global bin to PATH (Windows npm uses the prefix dir directly, not /bin)
-          $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-          if ($currentPath -notlike "*$npmGlobalDir*") {
-            [Environment]::SetEnvironmentVariable("Path", "$npmGlobalDir;$currentPath", "Machine")
-          }
+          # Add npm global bin to PATH
           $env:PATH = "$npmGlobalDir;$env:PATH"
           
           # Verify npm is working
@@ -316,8 +340,8 @@ jobs:
       - name: Install Scoop (persistent package manager)
         shell: pwsh
         run: |
-          # Use FIXED rdpuser path
-          $userHome = "${{ env.RDP_USER_HOME }}"
+          # Use CURRENT runner's USERPROFILE
+          $userHome = $env:USERPROFILE
           $scoopDir = "$userHome\scoop"
           
           Write-Host "Installing Scoop to: $scoopDir"
@@ -327,17 +351,11 @@ jobs:
             Write-Host "Scoop already installed (restored from previous session)"
             $env:SCOOP = $scoopDir
             $env:PATH = "$scoopDir\shims;$env:PATH"
-            [Environment]::SetEnvironmentVariable("SCOOP", $scoopDir, "Machine")
-            $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if ($currentPath -notlike "*$scoopDir\shims*") {
-              [Environment]::SetEnvironmentVariable("Path", "$scoopDir\shims;$currentPath", "Machine")
-            }
           } else {
-            Write-Host "Installing Scoop to rdpuser directory..."
+            Write-Host "Installing Scoop..."
             
-            # Set Scoop to install in rdpuser directory
+            # Set Scoop to install in user directory
             $env:SCOOP = $scoopDir
-            [Environment]::SetEnvironmentVariable("SCOOP", $scoopDir, "Machine")
             
             # Install Scoop
             Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
@@ -357,21 +375,16 @@ jobs:
         run: |
           Write-Host "Checking for custom applications..."
           
-          # Use FIXED rdpuser path
-          $userHome = "${{ env.RDP_USER_HOME }}"
+          # Use CURRENT runner's USERPROFILE
+          $userHome = $env:USERPROFILE
           $npmGlobalDir = "$userHome\.npm-global"
           $localBin = "$userHome\.local\bin"
           $scoopShims = "$userHome\scoop\shims"
           
-          Write-Host "Using FIXED user home: $userHome"
+          Write-Host "Using USERPROFILE: $userHome"
           
-          # Ensure PATH includes all custom locations
+          # Ensure PATH includes all custom locations for this session
           $env:PATH = "$npmGlobalDir;$localBin;$scoopShims;$env:PATH"
-          $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-          $newPaths = "$npmGlobalDir;$localBin;$scoopShims"
-          if ($currentPath -notlike "*$npmGlobalDir*") {
-            [Environment]::SetEnvironmentVariable("Path", "$newPaths;$currentPath", "Machine")
-          }
           
           # ============================================================
           # MOLTBOT - Check if already installed
@@ -422,6 +435,7 @@ jobs:
           $tailscaleIp = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
           $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
           $chainCount = "${{ steps.session.outputs.CHAIN_COUNT }}"
+          $userHome = $env:USERPROFILE
           
           Write-Host ""
           Write-Host "=============================================="
@@ -432,6 +446,7 @@ jobs:
           Write-Host "Chain Count:   $chainCount"
           Write-Host "Tailscale IP:  $tailscaleIp"
           Write-Host "Hostname:      gh-rdp-$sessionId"
+          Write-Host "USERPROFILE:   $userHome"
           Write-Host ""
           Write-Host "Connect via RDP:"
           Write-Host "  Address:  $tailscaleIp:3389"
@@ -440,10 +455,12 @@ jobs:
           Write-Host "  Password: (from RDP_PASSWORD secret)"
           Write-Host ""
           Write-Host "Persistent directories (auto-saved):"
-          Write-Host "  C:\Users\rdpuser\projects"
-          Write-Host "  C:\Users\rdpuser\Documents"
-          Write-Host "  C:\Users\rdpuser\.ssh"
+          Write-Host "  $userHome\projects"
+          Write-Host "  $userHome\.clawdbot"
+          Write-Host "  $userHome\.npm-global"
+          Write-Host "  $userHome\scoop"
           Write-Host ""
+          Write-Host "Paths are auto-patched between sessions!"
           Write-Host "Session will auto-chain in ~${{ env.SESSION_TIMEOUT_MINUTES }} minutes"
           Write-Host "=============================================="
 
@@ -453,16 +470,19 @@ jobs:
         run: |
           $persistDir = "${{ env.PERSIST_DIR }}"
           
-          # ALWAYS use the fixed rdpuser path for saving
-          # This ensures data is saved from where the RDP user actually works
-          $userHome = "${{ env.RDP_USER_HOME }}"
+          # Use CURRENT runner's USERPROFILE (dynamic)
+          $userHome = $env:USERPROFILE
           
-          Write-Host "Auto-save will save from FIXED path: $userHome"
+          Write-Host "Auto-save will save from: $userHome"
           
           # Create persist directory
           New-Item -ItemType Directory -Path $persistDir -Force | Out-Null
           
-          # Create save script - note: uses FIXED $userHome path
+          # Store current USERPROFILE so next session can patch paths
+          $userHome | Out-File -FilePath "$persistDir\userprofile.txt" -Encoding UTF8 -NoNewline
+          Write-Host "Saved USERPROFILE path to $persistDir\userprofile.txt"
+          
+          # Create save script - uses CURRENT $userHome
           $saveScript = @"
           `$persistDir = "$persistDir"
           `$userHome = "$userHome"
@@ -650,7 +670,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rdp-session-data-${{ steps.session.outputs.SESSION_ID }}
-          path: ${{ env.PERSIST_DIR }}/userdata.zip
+          path: |
+            ${{ env.PERSIST_DIR }}/userdata.zip
+            ${{ env.PERSIST_DIR }}/userprofile.txt
           retention-days: 7
           if-no-files-found: warn
           overwrite: true
