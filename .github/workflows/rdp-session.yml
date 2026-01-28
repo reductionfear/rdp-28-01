@@ -76,16 +76,47 @@ jobs:
         run: |
           $persistDir = "${{ env.PERSIST_DIR }}"
           
-          # IMPORTANT: Restore to rdpuser's profile, NOT the runner's profile
+          # Get rdpuser's actual profile path
+          # First check registry for the real profile path
           $rdpUserHome = "C:\Users\rdpuser"
+          $username = "rdpuser"
+          
+          try {
+            $userSid = (Get-LocalUser -Name $username -ErrorAction SilentlyContinue).SID.Value
+            if ($userSid) {
+              $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
+              if (Test-Path $profileKey) {
+                $regProfile = (Get-ItemProperty -Path $profileKey -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath
+                if ($regProfile) {
+                  $rdpUserHome = $regProfile
+                  Write-Host "Using registry profile path: $rdpUserHome"
+                }
+              }
+            }
+          } catch {
+            Write-Host "Could not check registry, using default path"
+          }
           
           Write-Host "Restoring data to rdpuser profile: $rdpUserHome"
           
           # Create rdpuser profile directory if it doesn't exist yet
           New-Item -ItemType Directory -Path $rdpUserHome -Force | Out-Null
           
+          # Find the zip file to restore (prefer userdata.zip, fallback to newest timestamped)
+          $zipToRestore = $null
           if (Test-Path "$persistDir\userdata.zip") {
-            Write-Host "Restoring persisted user data..."
+            $zipToRestore = "$persistDir\userdata.zip"
+          } else {
+            # Look for timestamped zips
+            $zips = Get-ChildItem -Path $persistDir -Filter "userdata*.zip" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+            if ($zips.Count -gt 0) {
+              $zipToRestore = $zips[0].FullName
+              Write-Host "Using timestamped zip: $($zips[0].Name)"
+            }
+          }
+          
+          if ($zipToRestore -and (Test-Path $zipToRestore)) {
+            Write-Host "Restoring persisted user data from: $zipToRestore"
             
             # Read the OLD userprofile path from previous session
             $oldUserHome = ""
@@ -96,7 +127,7 @@ jobs:
             }
             
             # Extract user data to rdpuser's USERPROFILE
-            Expand-Archive -Path "$persistDir\userdata.zip" -DestinationPath $rdpUserHome -Force
+            Expand-Archive -Path $zipToRestore -DestinationPath $rdpUserHome -Force
             
             Write-Host "User data restored to $rdpUserHome"
             
@@ -278,13 +309,155 @@ jobs:
           Write-Host "Password: (check secrets or generated above)"
           Write-Host "=========================================="
 
+      - name: Initialize rdpuser profile
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          $username = "rdpuser"
+          $password = $env:RDP_PASSWORD
+          $rdpUserHome = "C:\Users\rdpuser"
+          
+          Write-Host "Initializing user profile for rdpuser..."
+          
+          # Force Windows to create the user profile by running a process as that user
+          # This ensures the profile is properly initialized before RDP login
+          
+          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
+          
+          # Create a simple script that initializes the profile
+          $initScript = @"
+          # This runs as rdpuser to initialize the profile
+          Write-Host "Profile initialized for: `$env:USERNAME"
+          Write-Host "USERPROFILE: `$env:USERPROFILE"
+          
+          # Create standard directories
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\Documents" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\Desktop" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\Downloads" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\projects" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\.clawdbot" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\.npm-global" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\.local\bin" -Force | Out-Null
+          
+          # Output the actual profile path
+          "`$env:USERPROFILE" | Out-File -FilePath "C:\rdp-persist\actual-userprofile.txt" -Encoding UTF8 -NoNewline
+          "@
+          
+          $initScriptPath = "$env:TEMP\init-profile.ps1"
+          $initScript | Out-File -FilePath $initScriptPath -Encoding UTF8
+          
+          # Create persist dir if not exists
+          New-Item -ItemType Directory -Path "C:\rdp-persist" -Force | Out-Null
+          
+          # Run a process as rdpuser to initialize the profile
+          # Using Start-Process with credentials creates the profile
+          try {
+            $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $processInfo.FileName = "powershell.exe"
+            $processInfo.Arguments = "-ExecutionPolicy Bypass -File `"$initScriptPath`""
+            $processInfo.UseShellExecute = $false
+            $processInfo.LoadUserProfile = $true
+            $processInfo.UserName = $username
+            $processInfo.Password = $securePassword
+            $processInfo.Domain = $env:COMPUTERNAME
+            $processInfo.RedirectStandardOutput = $true
+            $processInfo.RedirectStandardError = $true
+            
+            $process = [System.Diagnostics.Process]::Start($processInfo)
+            $output = $process.StandardOutput.ReadToEnd()
+            $errors = $process.StandardError.ReadToEnd()
+            $process.WaitForExit(60000)  # 60 second timeout
+            
+            Write-Host "Profile init output: $output"
+            if ($errors) { Write-Host "Profile init errors: $errors" }
+            
+          } catch {
+            Write-Host "Could not run as rdpuser directly: $_"
+            Write-Host "Trying alternative method..."
+            
+            # Alternative: use runas or psexec-style approach
+            # Create profile directory structure manually as admin
+            New-Item -ItemType Directory -Path $rdpUserHome -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\Documents" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\Desktop" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\Downloads" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local\Temp" -Force | Out-Null
+            
+            # Set the profile path in registry to ensure Windows uses this path
+            $profileList = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
+            $userSid = (Get-LocalUser -Name $username).SID.Value
+            
+            if ($userSid) {
+              $profileKey = "$profileList\$userSid"
+              if (-not (Test-Path $profileKey)) {
+                New-Item -Path $profileKey -Force | Out-Null
+              }
+              Set-ItemProperty -Path $profileKey -Name "ProfileImagePath" -Value $rdpUserHome -Type ExpandString
+              Set-ItemProperty -Path $profileKey -Name "State" -Value 0 -Type DWord
+              Set-ItemProperty -Path $profileKey -Name "RefCount" -Value 0 -Type DWord
+              
+              Write-Host "Set profile path in registry: $rdpUserHome"
+            }
+          }
+          
+          # Verify what profile path will be used
+          if (Test-Path "C:\rdp-persist\actual-userprofile.txt") {
+            $actualProfile = Get-Content "C:\rdp-persist\actual-userprofile.txt" -Raw
+            Write-Host "Actual rdpuser profile path: $actualProfile"
+          }
+          
+          # Grant full permissions to rdpuser on the profile directory  
+          icacls $rdpUserHome /grant "rdpuser:(OI)(CI)F" /T /Q 2>$null
+          
+          # List what we created
+          Write-Host "Profile directories:"
+          Get-ChildItem -Path "C:\Users" -Directory | ForEach-Object { 
+            Write-Host "  $($_.Name) - $($_.FullName)" 
+          }
+          
+          Write-Host "Profile initialization complete"
+
       - name: Configure environment for rdpuser
         shell: pwsh
         run: |
-          # IMPORTANT: Configure for rdpuser's profile, NOT the runner
+          # Get the actual rdpuser profile path (may differ from C:\Users\rdpuser)
           $rdpUserHome = "C:\Users\rdpuser"
           
+          # Check if we have the actual profile path from initialization
+          if (Test-Path "C:\rdp-persist\actual-userprofile.txt") {
+            $actualProfile = (Get-Content "C:\rdp-persist\actual-userprofile.txt" -Raw).Trim()
+            if ($actualProfile -and (Test-Path $actualProfile)) {
+              $rdpUserHome = $actualProfile
+              Write-Host "Using actual profile path: $rdpUserHome"
+            }
+          }
+          
+          # Also check registry for the profile path
+          $username = "rdpuser"
+          try {
+            $userSid = (Get-LocalUser -Name $username -ErrorAction SilentlyContinue).SID.Value
+            if ($userSid) {
+              $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
+              if (Test-Path $profileKey) {
+                $regProfile = (Get-ItemProperty -Path $profileKey -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath
+                if ($regProfile -and (Test-Path $regProfile)) {
+                  $rdpUserHome = $regProfile
+                  Write-Host "Using registry profile path: $rdpUserHome"
+                }
+              }
+            }
+          } catch {
+            Write-Host "Could not check registry, using default path"
+          }
+          
           Write-Host "Configuring environment for rdpuser: $rdpUserHome"
+          
+          # Save the profile path for other steps
+          $rdpUserHome | Out-File -FilePath "C:\rdp-persist\rdpuser-home.txt" -Encoding UTF8 -NoNewline
           
           # Create directories for rdpuser
           New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
@@ -321,6 +494,7 @@ jobs:
           icacls $rdpUserHome /grant "rdpuser:(OI)(CI)F" /T /Q 2>$null
           
           Write-Host "Environment configured for rdpuser:"
+          Write-Host "  Profile path: $rdpUserHome"
           Write-Host "  CLAWDBOT_STATE_DIR = $rdpUserHome\.clawdbot"
           Write-Host "  CLAWDBOT_WORKSPACE = $rdpUserHome\projects"
           Write-Host "  SCOOP = $rdpUserHome\scoop"
@@ -351,8 +525,13 @@ jobs:
       - name: Configure NPM for rdpuser global installs
         shell: pwsh
         run: |
-          # Configure NPM for rdpuser's profile
+          # Get rdpuser's actual profile path
           $rdpUserHome = "C:\Users\rdpuser"
+          if (Test-Path "C:\rdp-persist\rdpuser-home.txt") {
+            $savedPath = (Get-Content "C:\rdp-persist\rdpuser-home.txt" -Raw).Trim()
+            if ($savedPath) { $rdpUserHome = $savedPath }
+          }
+          
           $npmGlobalDir = "$rdpUserHome\.npm-global"
           
           Write-Host "Configuring NPM for rdpuser: $rdpUserHome"
@@ -374,8 +553,13 @@ jobs:
       - name: Install Scoop for rdpuser
         shell: pwsh
         run: |
-          # Install Scoop to rdpuser's profile
+          # Get rdpuser's actual profile path
           $rdpUserHome = "C:\Users\rdpuser"
+          if (Test-Path "C:\rdp-persist\rdpuser-home.txt") {
+            $savedPath = (Get-Content "C:\rdp-persist\rdpuser-home.txt" -Raw).Trim()
+            if ($savedPath) { $rdpUserHome = $savedPath }
+          }
+          
           $scoopDir = "$rdpUserHome\scoop"
           
           Write-Host "Installing Scoop to: $scoopDir"
@@ -412,8 +596,13 @@ jobs:
         run: |
           Write-Host "Checking for custom applications..."
           
-          # Use rdpuser's profile
+          # Get rdpuser's actual profile path
           $rdpUserHome = "C:\Users\rdpuser"
+          if (Test-Path "C:\rdp-persist\rdpuser-home.txt") {
+            $savedPath = (Get-Content "C:\rdp-persist\rdpuser-home.txt" -Raw).Trim()
+            if ($savedPath) { $rdpUserHome = $savedPath }
+          }
+          
           $npmGlobalDir = "$rdpUserHome\.npm-global"
           $localBin = "$rdpUserHome\.local\bin"
           $scoopShims = "$rdpUserHome\scoop\shims"
@@ -469,7 +658,13 @@ jobs:
           $tailscaleIp = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
           $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
           $chainCount = "${{ steps.session.outputs.CHAIN_COUNT }}"
+          
+          # Get rdpuser's actual profile path
           $rdpUserHome = "C:\Users\rdpuser"
+          if (Test-Path "C:\rdp-persist\rdpuser-home.txt") {
+            $savedPath = (Get-Content "C:\rdp-persist\rdpuser-home.txt" -Raw).Trim()
+            if ($savedPath) { $rdpUserHome = $savedPath }
+          }
           
           Write-Host ""
           Write-Host "=============================================="
@@ -487,6 +682,8 @@ jobs:
           Write-Host "  Username: rdpuser"
           Write-Host "  Password: (from RDP_PASSWORD secret)"
           Write-Host ""
+          Write-Host "rdpuser profile path: $rdpUserHome"
+          Write-Host ""
           Write-Host "Persistent directories (auto-saved from rdpuser):"
           Write-Host "  $rdpUserHome\projects"
           Write-Host "  $rdpUserHome\.clawdbot"
@@ -503,8 +700,31 @@ jobs:
         run: |
           $persistDir = "${{ env.PERSIST_DIR }}"
           
-          # IMPORTANT: Save FROM rdpuser's profile, NOT the runner's profile
+          # Get rdpuser's actual profile path
           $rdpUserHome = "C:\Users\rdpuser"
+          
+          # Check saved profile path first
+          if (Test-Path "C:\rdp-persist\rdpuser-home.txt") {
+            $savedPath = (Get-Content "C:\rdp-persist\rdpuser-home.txt" -Raw).Trim()
+            if ($savedPath -and (Test-Path $savedPath)) {
+              $rdpUserHome = $savedPath
+            }
+          }
+          
+          # Also check registry as backup
+          $username = "rdpuser"
+          try {
+            $userSid = (Get-LocalUser -Name $username -ErrorAction SilentlyContinue).SID.Value
+            if ($userSid) {
+              $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
+              if (Test-Path $profileKey) {
+                $regProfile = (Get-ItemProperty -Path $profileKey -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath
+                if ($regProfile -and (Test-Path $regProfile)) {
+                  $rdpUserHome = $regProfile
+                }
+              }
+            }
+          } catch { }
           
           Write-Host "Auto-save will save from rdpuser: $rdpUserHome"
           
@@ -580,10 +800,40 @@ jobs:
             }
           }
           
-          # Create zip archive
+          # Create zip archive - use temp file to avoid lock issues
           if (Test-Path "`$tempBackup\*") {
-            Compress-Archive -Path "`$tempBackup\*" -DestinationPath "`$persistDir\userdata.zip" -Force
-            Write-Host "Data saved to `$persistDir\userdata.zip"
+            `$tempZip = "`$persistDir\userdata-`$timestamp.zip"
+            `$finalZip = "`$persistDir\userdata.zip"
+            
+            # Create new zip with timestamp name
+            Compress-Archive -Path "`$tempBackup\*" -DestinationPath `$tempZip -Force
+            
+            # Remove old zip if exists (with retries for file lock)
+            if (Test-Path `$finalZip) {
+              `$retries = 3
+              while (`$retries -gt 0) {
+                try {
+                  Remove-Item -Path `$finalZip -Force -ErrorAction Stop
+                  break
+                } catch {
+                  `$retries--
+                  if (`$retries -gt 0) {
+                    Write-Host "  Zip locked, retrying in 2s..."
+                    Start-Sleep -Seconds 2
+                  } else {
+                    Write-Host "  Could not remove old zip, keeping new one with timestamp"
+                  }
+                }
+              }
+            }
+            
+            # Rename temp zip to final name
+            if (-not (Test-Path `$finalZip)) {
+              Move-Item -Path `$tempZip -Destination `$finalZip -Force
+              Write-Host "Data saved to `$finalZip"
+            } else {
+              Write-Host "Data saved to `$tempZip (old zip was locked)"
+            }
           }
           
           # Cleanup
@@ -692,6 +942,43 @@ jobs:
           if (Test-Path "$persistDir\auto-save.ps1") {
             & powershell.exe -ExecutionPolicy Bypass -File "$persistDir\auto-save.ps1"
           }
+          
+          # Consolidate any timestamped zips - use the newest one
+          $zips = Get-ChildItem -Path $persistDir -Filter "userdata*.zip" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+          if ($zips.Count -gt 1) {
+            $newest = $zips[0]
+            Write-Host "Found $($zips.Count) zip files, using newest: $($newest.Name)"
+            
+            # If newest isn't userdata.zip, try to rename it
+            if ($newest.Name -ne "userdata.zip") {
+              $finalZip = "$persistDir\userdata.zip"
+              
+              # Remove old userdata.zip if it exists
+              if (Test-Path $finalZip) {
+                try {
+                  Remove-Item -Path $finalZip -Force -ErrorAction Stop
+                } catch {
+                  Write-Host "Could not remove old userdata.zip, will upload timestamped version"
+                }
+              }
+              
+              if (-not (Test-Path $finalZip)) {
+                Move-Item -Path $newest.FullName -Destination $finalZip -Force
+                Write-Host "Renamed $($newest.Name) to userdata.zip"
+              }
+            }
+            
+            # Clean up old timestamped zips
+            foreach ($zip in $zips | Select-Object -Skip 1) {
+              if ($zip.Name -ne "userdata.zip") {
+                Remove-Item -Path $zip.FullName -Force -ErrorAction SilentlyContinue
+                Write-Host "Removed old zip: $($zip.Name)"
+              }
+            }
+          }
+          
+          Write-Host "Final save complete"
+          Get-ChildItem -Path $persistDir | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
 
       - name: Upload persisted data
         if: always()
@@ -699,8 +986,9 @@ jobs:
         with:
           name: rdp-session-data-${{ steps.session.outputs.SESSION_ID }}
           path: |
-            ${{ env.PERSIST_DIR }}/userdata.zip
+            ${{ env.PERSIST_DIR }}/userdata*.zip
             ${{ env.PERSIST_DIR }}/userprofile.txt
+            ${{ env.PERSIST_DIR }}/rdpuser-home.txt
           retention-days: 7
           if-no-files-found: warn
           overwrite: true
