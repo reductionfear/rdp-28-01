@@ -36,9 +36,21 @@ jobs:
           if ([string]::IsNullOrEmpty($sessionId)) {
             $sessionId = [guid]::NewGuid().ToString().Substring(0,8)
           }
-          $chainCount = [int]"${{ github.event.inputs.chain_count }}"
-          if ($chainCount -eq 0 -and "${{ github.event_name }}" -eq "repository_dispatch") {
-            $chainCount = ${{ github.event.client_payload.chain_count }}
+          
+          # Handle chain count safely
+          $chainCountInput = "${{ github.event.inputs.chain_count }}"
+          if ([string]::IsNullOrEmpty($chainCountInput)) {
+            $chainCount = 0
+          } else {
+            $chainCount = [int]$chainCountInput
+          }
+          
+          # Check if this is a repository_dispatch event
+          if ("${{ github.event_name }}" -eq "repository_dispatch") {
+            $payloadCount = "${{ github.event.client_payload.chain_count }}"
+            if (-not [string]::IsNullOrEmpty($payloadCount)) {
+              $chainCount = [int]$payloadCount
+            }
           }
           
           echo "SESSION_ID=$sessionId" >> $env:GITHUB_OUTPUT
