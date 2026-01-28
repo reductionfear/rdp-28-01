@@ -537,6 +537,7 @@ jobs:
             "`$userHome\.npmrc",           # NPM config
             "`$userHome\scoop",            # Scoop + all scoop-installed apps!
             "`$userHome\.clawdbot",        # Clawdbot config directory
+            "`$userHome\clawd",            # Clawdbot identity/memory docs
             "`$userHome\.config"           # Config directory
           )
           
