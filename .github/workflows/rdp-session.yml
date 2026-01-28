@@ -75,7 +75,14 @@ jobs:
         shell: pwsh
         run: |
           $persistDir = "${{ env.PERSIST_DIR }}"
-          $userHome = "C:\Users\rdpuser"
+          
+          # Use actual user profile
+          $userHome = $env:USERPROFILE
+          if (-not $userHome) {
+            $userHome = "C:\Users\$env:USERNAME"
+          }
+          
+          Write-Host "Restoring to user home: $userHome"
           
           if (Test-Path "$persistDir\userdata.zip") {
             Write-Host "Restoring persisted user data..."
@@ -225,9 +232,12 @@ jobs:
       - name: Configure NPM for user-level global installs
         shell: pwsh
         run: |
-          $userHome = "C:\Users\rdpuser"
+          # Use actual user profile
+          $userHome = $env:USERPROFILE
           $npmGlobalDir = "$userHome\.npm-global"
           $npmBinDir = "$npmGlobalDir"
+          
+          Write-Host "User home: $userHome"
           
           # Create directories
           New-Item -ItemType Directory -Path $npmGlobalDir -Force | Out-Null
@@ -250,7 +260,8 @@ jobs:
       - name: Install Scoop (persistent package manager)
         shell: pwsh
         run: |
-          $userHome = "C:\Users\rdpuser"
+          # Use actual user profile
+          $userHome = $env:USERPROFILE
           $scoopDir = "$userHome\scoop"
           
           # Check if Scoop already exists (restored from previous session)
@@ -285,10 +296,13 @@ jobs:
         run: |
           Write-Host "Checking for custom applications..."
           
-          $userHome = "C:\Users\rdpuser"
+          # Use actual user profile
+          $userHome = $env:USERPROFILE
           $npmGlobalDir = "$userHome\.npm-global"
           $localBin = "$userHome\.local\bin"
           $scoopShims = "$userHome\scoop\shims"
+          
+          Write-Host "User home: $userHome"
           
           # Ensure PATH includes all custom locations
           $env:PATH = "$npmGlobalDir;$localBin;$scoopShims;$env:PATH"
@@ -373,7 +387,14 @@ jobs:
         shell: pwsh
         run: |
           $persistDir = "${{ env.PERSIST_DIR }}"
-          $userHome = "C:\Users\rdpuser"
+          
+          # Use actual user profile (handles rdpuser.runnerXXX naming)
+          $userHome = $env:USERPROFILE
+          if (-not $userHome) {
+            $userHome = "C:\Users\$env:USERNAME"
+          }
+          
+          Write-Host "User home detected: $userHome"
           
           # Create persist directory
           New-Item -ItemType Directory -Path $persistDir -Force | Out-Null
