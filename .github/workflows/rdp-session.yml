@@ -583,27 +583,20 @@ jobs:
           $workspacePath = $clawdWorkspace -replace '\\', '/'
           $config = @"
 {
-  // Moltbot config - GitHub Actions RDP
-  
-  // Telegram channel
-  channels: {
-    telegram: {
-      enabled: true
+  "channels": {
+    "telegram": {
+      "enabled": true
     }
   },
-  
-  // Model preferences - Antigravity first
-  agents: {
-    defaults: {
-      workspace: "$workspacePath",
-      model: "claude-sonnet",
-      provider: "antigravity"
+  "agents": {
+    "defaults": {
+      "workspace": "$workspacePath",
+      "model": "claude-sonnet",
+      "provider": "antigravity"
     }
   },
-  
-  // Auth order - prefer antigravity
-  auth: {
-    order: {
+  "auth": {
+    "order": {
       "claude-sonnet": ["antigravity", "anthropic"],
       "claude-opus": ["antigravity", "anthropic"],
       "default": ["antigravity", "anthropic", "openai"]
