@@ -60,145 +60,16 @@ jobs:
           Write-Host "Session ID: $sessionId"
           Write-Host "Chain iteration: $chainCount"
 
-      # ========== RESTORE PERSISTED DATA ==========
+      # ========== DOWNLOAD PERSISTED DATA (but don't restore yet) ==========
       - name: Download persisted data
         if: ${{ github.event.inputs.chain_count != '0' || github.event_name == 'repository_dispatch' }}
-        uses: dawidd6/action-download-artifact@v3
+        uses: dawidd6/action-download-artifact@v6
         with:
           workflow: rdp-session.yml
           name: rdp-session-data-${{ steps.session.outputs.SESSION_ID }}
           path: ${{ env.PERSIST_DIR }}
           if_no_artifact_found: warn
         continue-on-error: true
-
-      - name: Restore user data
-        shell: pwsh
-        run: |
-          $persistDir = "${{ env.PERSIST_DIR }}"
-          
-          # Get rdpuser's actual profile path
-          # First check registry for the real profile path
-          $rdpUserHome = "C:\Users\rdpuser"
-          $username = "rdpuser"
-          
-          try {
-            $userSid = (Get-LocalUser -Name $username -ErrorAction SilentlyContinue).SID.Value
-            if ($userSid) {
-              $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
-              if (Test-Path $profileKey) {
-                $regProfile = (Get-ItemProperty -Path $profileKey -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath
-                if ($regProfile) {
-                  $rdpUserHome = $regProfile
-                  Write-Host "Using registry profile path: $rdpUserHome"
-                }
-              }
-            }
-          } catch {
-            Write-Host "Could not check registry, using default path"
-          }
-          
-          Write-Host "Restoring data to rdpuser profile: $rdpUserHome"
-          
-          # Create rdpuser profile directory if it doesn't exist yet
-          New-Item -ItemType Directory -Path $rdpUserHome -Force | Out-Null
-          
-          # Find the zip file to restore (prefer userdata.zip, fallback to newest timestamped)
-          $zipToRestore = $null
-          if (Test-Path "$persistDir\userdata.zip") {
-            $zipToRestore = "$persistDir\userdata.zip"
-          } else {
-            # Look for timestamped zips
-            $zips = Get-ChildItem -Path $persistDir -Filter "userdata*.zip" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-            if ($zips.Count -gt 0) {
-              $zipToRestore = $zips[0].FullName
-              Write-Host "Using timestamped zip: $($zips[0].Name)"
-            }
-          }
-          
-          if ($zipToRestore -and (Test-Path $zipToRestore)) {
-            Write-Host "Restoring persisted user data from: $zipToRestore"
-            
-            # Read the OLD userprofile path from previous session
-            $oldUserHome = ""
-            if (Test-Path "$persistDir\userprofile.txt") {
-              $oldUserHome = Get-Content "$persistDir\userprofile.txt" -Raw
-              $oldUserHome = $oldUserHome.Trim()
-              Write-Host "Previous session USERPROFILE was: $oldUserHome"
-            }
-            
-            # Extract user data to rdpuser's USERPROFILE
-            Expand-Archive -Path $zipToRestore -DestinationPath $rdpUserHome -Force
-            
-            Write-Host "User data restored to $rdpUserHome"
-            
-            # Patch config files to replace old/runner paths with rdpuser path
-            # Always patch common runner usernames, not just the saved oldUserHome
-            $pathsToReplace = @(
-              "C:\Users\runneradmin",
-              "C:\Users\runner", 
-              "C:\Users\ContainerAdministrator"
-            )
-            
-            # Also add oldUserHome if it's different from rdpUserHome
-            if ($oldUserHome -and ($oldUserHome -ne $rdpUserHome) -and ($pathsToReplace -notcontains $oldUserHome)) {
-              $pathsToReplace += $oldUserHome
-            }
-            
-            Write-Host "Will patch these paths to $rdpUserHome :"
-            $pathsToReplace | ForEach-Object { Write-Host "  - $_" }
-            
-            # Files that may contain hardcoded paths
-            $configFiles = @(
-              "$rdpUserHome\.clawdbot\clawdbot.json",
-              "$rdpUserHome\.clawdbot\agents\main\agent\auth-profiles.json",
-              "$rdpUserHome\.clawdbot\agents\main\agent.json",
-              "$rdpUserHome\.npmrc",
-              "$rdpUserHome\.gitconfig"
-            )
-            
-            foreach ($file in $configFiles) {
-              if (Test-Path $file) {
-                $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
-                if ($content) {
-                  $patched = $false
-                  
-                  foreach ($oldPath in $pathsToReplace) {
-                    if ($content.Contains($oldPath) -or $content.Contains(($oldPath -replace '\\', '/')) -or $content.Contains(($oldPath -replace '\\', '\\\\'))) {
-                      # Replace backslash, forward slash, and escaped versions
-                      $oldPathBackslash = $oldPath
-                      $newPathBackslash = $rdpUserHome
-                      $oldPathForward = $oldPath -replace '\\', '/'
-                      $newPathForward = $rdpUserHome -replace '\\', '/'
-                      $oldPathEscaped = $oldPath -replace '\\', '\\\\'
-                      $newPathEscaped = $rdpUserHome -replace '\\', '\\\\'
-                      
-                      $content = $content -replace [regex]::Escape($oldPathEscaped), $newPathEscaped
-                      $content = $content -replace [regex]::Escape($oldPathBackslash), $newPathBackslash
-                      $content = $content -replace [regex]::Escape($oldPathForward), $newPathForward
-                      
-                      $patched = $true
-                      Write-Host "  Patched $oldPath in: $file"
-                    }
-                  }
-                  
-                  if ($patched) {
-                    Set-Content -Path $file -Value $content -NoNewline
-                  }
-                }
-              }
-            }
-            
-          # Set proper ownership for rdpuser
-          Write-Host "Setting ownership for rdpuser..."
-          $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $global:LASTEXITCODE = 0
-            
-            # List what was restored
-            Write-Host "Restored contents:"
-            Get-ChildItem -Path $rdpUserHome -Force | ForEach-Object { Write-Host "  $_" }
-          } else {
-            Write-Host "No persisted data found (first session or artifact expired)"
-          }
 
       # ========== TAILSCALE SETUP ==========
       - name: Install Tailscale
@@ -236,8 +107,6 @@ jobs:
           Start-Sleep -Seconds 5
           
           # Authenticate with Tailscale
-          # Note: Tags are embedded in the auth key, not passed here
-          # If you need to override, use: --advertise-tags=tag:github-runner
           & "C:\Program Files\Tailscale\tailscale.exe" up `
             --authkey="$env:TAILSCALE_AUTHKEY" `
             --hostname="$hostname" `
@@ -311,25 +180,24 @@ jobs:
           Write-Host "=========================================="
 
       - name: Initialize rdpuser profile
+        id: rdpuser
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $username = "rdpuser"
           $password = $env:RDP_PASSWORD
-          $rdpUserHome = "C:\Users\rdpuser"
+          $persistDir = "${{ env.PERSIST_DIR }}"
           
           Write-Host "Initializing user profile for rdpuser..."
           
-          # Force Windows to create the user profile by running a process as that user
-          # This ensures the profile is properly initialized before RDP login
+          # Create persist dir if not exists
+          New-Item -ItemType Directory -Path $persistDir -Force | Out-Null
           
           $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-          $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
           
-          # Create a simple script that initializes the profile
+          # Create a script to run as rdpuser to initialize profile and get actual path
           $initScript = @"
-          # This runs as rdpuser to initialize the profile
           Write-Host "Profile initialized for: `$env:USERNAME"
           Write-Host "USERPROFILE: `$env:USERPROFILE"
           
@@ -341,19 +209,16 @@ jobs:
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\.clawdbot" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\.npm-global" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\.local\bin" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\scoop" -Force | Out-Null
           
           # Output the actual profile path
-          "`$env:USERPROFILE" | Out-File -FilePath "C:\rdp-persist\actual-userprofile.txt" -Encoding UTF8 -NoNewline
+          "`$env:USERPROFILE" | Out-File -FilePath "$persistDir\actual-userprofile.txt" -Encoding UTF8 -NoNewline
           "@
           
           $initScriptPath = "$env:TEMP\init-profile.ps1"
           $initScript | Out-File -FilePath $initScriptPath -Encoding UTF8
           
-          # Create persist dir if not exists
-          New-Item -ItemType Directory -Path "C:\rdp-persist" -Force | Out-Null
-          
-          # Run a process as rdpuser to initialize the profile
-          # Using Start-Process with credentials creates the profile
+          # Run as rdpuser to create profile
           try {
             $processInfo = New-Object System.Diagnostics.ProcessStartInfo
             $processInfo.FileName = "powershell.exe"
@@ -369,26 +234,31 @@ jobs:
             $process = [System.Diagnostics.Process]::Start($processInfo)
             $output = $process.StandardOutput.ReadToEnd()
             $errors = $process.StandardError.ReadToEnd()
-            $process.WaitForExit(60000)  # 60 second timeout
+            $process.WaitForExit(60000)
             
             Write-Host "Profile init output: $output"
             if ($errors) { Write-Host "Profile init errors: $errors" }
             
           } catch {
             Write-Host "Could not run as rdpuser directly: $_"
-            Write-Host "Trying alternative method..."
+            Write-Host "Creating profile manually..."
             
-            # Alternative: use runas or psexec-style approach
-            # Create profile directory structure manually as admin
+            # Fallback: create profile manually
+            $rdpUserHome = "C:\Users\rdpuser"
             New-Item -ItemType Directory -Path $rdpUserHome -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\Documents" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\Desktop" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\Downloads" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\.clawdbot" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\scoop" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local\Temp" -Force | Out-Null
             
-            # Set the profile path in registry to ensure Windows uses this path
+            # Set profile in registry
             $profileList = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
             $userSid = (Get-LocalUser -Name $username).SID.Value
             
@@ -400,46 +270,22 @@ jobs:
               Set-ItemProperty -Path $profileKey -Name "ProfileImagePath" -Value $rdpUserHome -Type ExpandString
               Set-ItemProperty -Path $profileKey -Name "State" -Value 0 -Type DWord
               Set-ItemProperty -Path $profileKey -Name "RefCount" -Value 0 -Type DWord
-              
-              Write-Host "Set profile path in registry: $rdpUserHome"
             }
+            
+            # Save the path
+            $rdpUserHome | Out-File -FilePath "$persistDir\actual-userprofile.txt" -Encoding UTF8 -NoNewline
           }
           
-          # Verify what profile path will be used
-          if (Test-Path "C:\rdp-persist\actual-userprofile.txt") {
-            $actualProfile = Get-Content "C:\rdp-persist\actual-userprofile.txt" -Raw
-            Write-Host "Actual rdpuser profile path: $actualProfile"
-          }
-          
-          # Grant full permissions to rdpuser on the profile directory  
-          $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $global:LASTEXITCODE = 0
-          
-          # List what we created
-          Write-Host "Profile directories:"
-          Get-ChildItem -Path "C:\Users" -Directory | ForEach-Object { 
-            Write-Host "  $($_.Name) - $($_.FullName)" 
-          }
-          
-          Write-Host "Profile initialization complete"
-
-      - name: Configure environment for rdpuser
-        shell: pwsh
-        run: |
-          # Get the actual rdpuser profile path (may differ from C:\Users\rdpuser)
+          # Get the actual profile path
           $rdpUserHome = "C:\Users\rdpuser"
-          
-          # Check if we have the actual profile path from initialization
-          if (Test-Path "C:\rdp-persist\actual-userprofile.txt") {
-            $actualProfile = (Get-Content "C:\rdp-persist\actual-userprofile.txt" -Raw).Trim()
+          if (Test-Path "$persistDir\actual-userprofile.txt") {
+            $actualProfile = (Get-Content "$persistDir\actual-userprofile.txt" -Raw).Trim()
             if ($actualProfile -and (Test-Path $actualProfile)) {
               $rdpUserHome = $actualProfile
-              Write-Host "Using actual profile path: $rdpUserHome"
             }
           }
           
-          # Also check registry for the profile path
-          $username = "rdpuser"
+          # Also check registry
           try {
             $userSid = (Get-LocalUser -Name $username -ErrorAction SilentlyContinue).SID.Value
             if ($userSid) {
@@ -448,20 +294,146 @@ jobs:
                 $regProfile = (Get-ItemProperty -Path $profileKey -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath
                 if ($regProfile -and (Test-Path $regProfile)) {
                   $rdpUserHome = $regProfile
-                  Write-Host "Using registry profile path: $rdpUserHome"
                 }
               }
             }
-          } catch {
-            Write-Host "Could not check registry, using default path"
+          } catch { }
+          
+          Write-Host "rdpuser USERPROFILE: $rdpUserHome"
+          
+          # Save for other steps
+          echo "RDPUSER_HOME=$rdpUserHome" >> $env:GITHUB_OUTPUT
+          $rdpUserHome | Out-File -FilePath "$persistDir\rdpuser-home.txt" -Encoding UTF8 -NoNewline
+          
+          # Grant permissions
+          $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
+          
+          Write-Host "Profile initialization complete: $rdpUserHome"
+
+      # ========== NOW TRANSFER PERSISTED DATA (after we know USERPROFILE) ==========
+      - name: Transfer persisted data to rdpuser
+        shell: pwsh
+        run: |
+          $persistDir = "${{ env.PERSIST_DIR }}"
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          
+          Write-Host "Transferring persisted data to: $rdpUserHome"
+          
+          # Find the zip file to restore
+          $zipToRestore = $null
+          if (Test-Path "$persistDir\userdata.zip") {
+            $zipToRestore = "$persistDir\userdata.zip"
+          } else {
+            $zips = Get-ChildItem -Path $persistDir -Filter "userdata*.zip" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+            if ($zips.Count -gt 0) {
+              $zipToRestore = $zips[0].FullName
+              Write-Host "Using timestamped zip: $($zips[0].Name)"
+            }
           }
+          
+          if (-not $zipToRestore -or -not (Test-Path $zipToRestore)) {
+            Write-Host "No persisted data found (first session or artifact expired)"
+            exit 0
+          }
+          
+          Write-Host "Restoring from: $zipToRestore"
+          
+          # Read the OLD userprofile path from previous session
+          $oldUserHome = ""
+          if (Test-Path "$persistDir\userprofile.txt") {
+            $oldUserHome = (Get-Content "$persistDir\userprofile.txt" -Raw).Trim()
+            Write-Host "Previous session USERPROFILE: $oldUserHome"
+          }
+          
+          # Extract to rdpuser's profile
+          Expand-Archive -Path $zipToRestore -DestinationPath $rdpUserHome -Force
+          
+          Write-Host "Data extracted to $rdpUserHome"
+          
+          # Paths to replace (old runner paths -> new rdpuser path)
+          $pathsToReplace = @(
+            "C:\Users\runneradmin",
+            "C:\Users\runner",
+            "C:\Users\ContainerAdministrator"
+          )
+          
+          # Add old USERPROFILE if different
+          if ($oldUserHome -and ($oldUserHome -ne $rdpUserHome) -and ($pathsToReplace -notcontains $oldUserHome)) {
+            $pathsToReplace += $oldUserHome
+          }
+          
+          Write-Host "Patching these paths to $rdpUserHome :"
+          $pathsToReplace | ForEach-Object { Write-Host "  - $_" }
+          
+          # Config files that may contain hardcoded paths
+          $configFiles = @(
+            "$rdpUserHome\.clawdbot\clawdbot.json",
+            "$rdpUserHome\.clawdbot\agents\main\agent\auth-profiles.json",
+            "$rdpUserHome\.clawdbot\agents\main\agent.json",
+            "$rdpUserHome\.npmrc",
+            "$rdpUserHome\.gitconfig",
+            "$rdpUserHome\.config\clawdbot\settings.json"
+          )
+          
+          # Also find any JSON files in .clawdbot that might have paths
+          if (Test-Path "$rdpUserHome\.clawdbot") {
+            Get-ChildItem -Path "$rdpUserHome\.clawdbot" -Filter "*.json" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+              if ($configFiles -notcontains $_.FullName) {
+                $configFiles += $_.FullName
+              }
+            }
+          }
+          
+          foreach ($file in $configFiles) {
+            if (Test-Path $file) {
+              $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
+              if ($content) {
+                $patched = $false
+                
+                foreach ($oldPath in $pathsToReplace) {
+                  # Check all path format variations
+                  $oldBackslash = $oldPath
+                  $oldForward = $oldPath -replace '\\', '/'
+                  $oldEscaped = $oldPath -replace '\\', '\\\\'
+                  
+                  $newBackslash = $rdpUserHome
+                  $newForward = $rdpUserHome -replace '\\', '/'
+                  $newEscaped = $rdpUserHome -replace '\\', '\\\\'
+                  
+                  if ($content.Contains($oldBackslash) -or $content.Contains($oldForward) -or $content.Contains($oldEscaped)) {
+                    $content = $content -replace [regex]::Escape($oldEscaped), $newEscaped
+                    $content = $content -replace [regex]::Escape($oldBackslash), $newBackslash
+                    $content = $content -replace [regex]::Escape($oldForward), $newForward
+                    $patched = $true
+                    Write-Host "  Patched $oldPath in: $file"
+                  }
+                }
+                
+                if ($patched) {
+                  Set-Content -Path $file -Value $content -NoNewline
+                }
+              }
+            }
+          }
+          
+          # Set ownership for rdpuser
+          Write-Host "Setting ownership for rdpuser..."
+          $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
+          
+          # List what was restored
+          Write-Host "Restored contents:"
+          Get-ChildItem -Path $rdpUserHome -Force | ForEach-Object { Write-Host "  $_" }
+
+      - name: Configure environment for rdpuser
+        shell: pwsh
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           
           Write-Host "Configuring environment for rdpuser: $rdpUserHome"
           
-          # Save the profile path for other steps
-          $rdpUserHome | Out-File -FilePath "C:\rdp-persist\rdpuser-home.txt" -Encoding UTF8 -NoNewline
-          
-          # Create directories for rdpuser
+          # Create directories
           New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.clawdbot" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
@@ -470,15 +442,13 @@ jobs:
           New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
           
-          # Set machine-wide environment variables pointing to rdpuser's profile
+          # Set machine-wide environment variables
           [Environment]::SetEnvironmentVariable("CLAWDBOT_STATE_DIR", "$rdpUserHome\.clawdbot", "Machine")
           [Environment]::SetEnvironmentVariable("CLAWDBOT_WORKSPACE", "$rdpUserHome\projects", "Machine")
           [Environment]::SetEnvironmentVariable("SCOOP", "$rdpUserHome\scoop", "Machine")
-          
-          # Fix NPM prefix - Chocolatey sets NPM_CONFIG_PREFIX which overrides npm config
           [Environment]::SetEnvironmentVariable("NPM_CONFIG_PREFIX", "$rdpUserHome\.npm-global", "Machine")
           
-          # Update PATH with rdpuser's directories
+          # Update PATH
           $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
           $newPaths = @(
             "$rdpUserHome\.npm-global",
@@ -492,17 +462,15 @@ jobs:
           }
           [Environment]::SetEnvironmentVariable("Path", $currentPath, "Machine")
           
-          # Set ownership for rdpuser
+          # Set ownership
           $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
-          Write-Host "Environment configured for rdpuser:"
-          Write-Host "  Profile path: $rdpUserHome"
+          Write-Host "Environment configured:"
           Write-Host "  CLAWDBOT_STATE_DIR = $rdpUserHome\.clawdbot"
           Write-Host "  CLAWDBOT_WORKSPACE = $rdpUserHome\projects"
           Write-Host "  SCOOP = $rdpUserHome\scoop"
           Write-Host "  NPM_CONFIG_PREFIX = $rdpUserHome\.npm-global"
-          Write-Host "  PATH includes npm-global, scoop shims, and .local/bin"
 
       - name: Install Development Tools
         shell: pwsh
@@ -520,7 +488,7 @@ jobs:
           # Install common dev tools
           choco install -y git vscode nodejs-lts python3 7zip --no-progress
           
-          # Refresh PATH again after nodejs install
+          # Refresh PATH again
           $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
           Write-Host "Development tools installed"
@@ -528,129 +496,94 @@ jobs:
       - name: Configure NPM for rdpuser global installs
         shell: pwsh
         run: |
-          # Get rdpuser's actual profile path
-          $rdpUserHome = "C:\Users\rdpuser"
-          if (Test-Path "C:\rdp-persist\rdpuser-home.txt") {
-            $savedPath = (Get-Content "C:\rdp-persist\rdpuser-home.txt" -Raw).Trim()
-            if ($savedPath) { $rdpUserHome = $savedPath }
-          }
-          
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           $npmGlobalDir = "$rdpUserHome\.npm-global"
           
           Write-Host "Configuring NPM for rdpuser: $rdpUserHome"
           
-          # Create directories
+          # Create directory
           New-Item -ItemType Directory -Path $npmGlobalDir -Force | Out-Null
           
-          # Set env var for this session (for any npm calls in workflow)
+          # Set env for this session
           $env:NPM_CONFIG_PREFIX = $npmGlobalDir
-          
-          # Add npm global bin to PATH for this session
           $env:PATH = "$npmGlobalDir;$env:PATH"
           
-          # Verify npm is working
           Write-Host "NPM version: $(npm --version)"
           Write-Host "NPM prefix: $(npm config get prefix)"
-          Write-Host "NPM configured to install global packages to: $npmGlobalDir"
 
       - name: Install Scoop for rdpuser
         shell: pwsh
         run: |
-          # Get rdpuser's actual profile path
-          $rdpUserHome = "C:\Users\rdpuser"
-          if (Test-Path "C:\rdp-persist\rdpuser-home.txt") {
-            $savedPath = (Get-Content "C:\rdp-persist\rdpuser-home.txt" -Raw).Trim()
-            if ($savedPath) { $rdpUserHome = $savedPath }
-          }
-          
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           $scoopDir = "$rdpUserHome\scoop"
           
           Write-Host "Installing Scoop to: $scoopDir"
           
-          # Check if Scoop already exists (restored from previous session)
+          # Check if Scoop already exists (restored)
           if (Test-Path "$scoopDir\shims\scoop.ps1") {
             Write-Host "Scoop already installed (restored from previous session)"
             $env:SCOOP = $scoopDir
             $env:PATH = "$scoopDir\shims;$env:PATH"
           } else {
             Write-Host "Installing Scoop..."
-            
-            # Set Scoop to install in rdpuser's directory
             $env:SCOOP = $scoopDir
-            
-            # Install Scoop
             Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
             Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
-            
-            Write-Host "Scoop installed successfully"
           }
           
-          # Install common tools that skills need
-          Write-Host "Installing common tools via Scoop..."
+          # Install common tools
           scoop install git go ffmpeg yt-dlp --no-cache 2>$null
           
-          # Set ownership for rdpuser
+          # Set ownership
           $null = cmd /c "icacls `"$scoopDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
-          Write-Host "Scoop ready! Install apps with: scoop install <app>"
+          Write-Host "Scoop ready!"
 
       - name: Install Custom Apps
         shell: pwsh
         run: |
-          Write-Host "Checking for custom applications..."
-          
-          # Get rdpuser's actual profile path
-          $rdpUserHome = "C:\Users\rdpuser"
-          if (Test-Path "C:\rdp-persist\rdpuser-home.txt") {
-            $savedPath = (Get-Content "C:\rdp-persist\rdpuser-home.txt" -Raw).Trim()
-            if ($savedPath) { $rdpUserHome = $savedPath }
-          }
-          
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           $npmGlobalDir = "$rdpUserHome\.npm-global"
           $localBin = "$rdpUserHome\.local\bin"
           $scoopShims = "$rdpUserHome\scoop\shims"
           
           Write-Host "Using rdpuser profile: $rdpUserHome"
           
-          # Ensure PATH includes all custom locations for this session
+          # Set PATH for this session
           $env:PATH = "$npmGlobalDir;$localBin;$scoopShims;$env:PATH"
+          $env:NPM_CONFIG_PREFIX = $npmGlobalDir
           
-          # ============================================================
-          # CLAWDBOT - Check if already installed
-          # ============================================================
+          # Check if clawdbot already installed
           $clawdbotExists = $false
-          
           if (Test-Path "$npmGlobalDir\clawdbot.cmd") { $clawdbotExists = $true }
           if (Test-Path "$npmGlobalDir\node_modules\clawdbot") { $clawdbotExists = $true }
-          if (Test-Path "$localBin\clawdbot.cmd") { $clawdbotExists = $true }
           if (Get-Command clawdbot -ErrorAction SilentlyContinue) { $clawdbotExists = $true }
           
           if ($clawdbotExists) {
             Write-Host "=============================================="
             Write-Host "Clawdbot FOUND (restored from previous session)"
             Write-Host "=============================================="
-            Write-Host "No reinstall needed - ready to use!"
+            Write-Host "Updating to latest version..."
+            npm update -g clawdbot
           } else {
             Write-Host "=============================================="
-            Write-Host "Clawdbot not installed yet"
+            Write-Host "Installing Clawdbot..."
             Write-Host "=============================================="
-            Write-Host ""
-            Write-Host "After connecting via RDP, run:"
-            Write-Host "  npm install -g clawdbot"
-            Write-Host ""
-            Write-Host "It will persist across all future sessions!"
+            npm install -g clawdbot@latest
           }
           
-          # ============================================================
-          # SCOOP STATUS
-          # ============================================================
-          Write-Host ""
-          Write-Host "Scoop package manager ready!"
-          Write-Host "Install Windows apps with: scoop install <app>"
-          Write-Host "All scoop apps persist across sessions!"
-          Write-Host ""
-          Write-Host "Example: scoop install ffmpeg yt-dlp go python"
+          # Verify installation
+          if (Get-Command clawdbot -ErrorAction SilentlyContinue) {
+            Write-Host "Clawdbot installed successfully!"
+            clawdbot --version
+          } else {
+            Write-Host "Clawdbot installation may need PATH refresh on login"
+          }
+          
+          # Set ownership
+          $null = cmd /c "icacls `"$npmGlobalDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
           
           Write-Host ""
           Write-Host "Custom apps step complete"
@@ -662,13 +595,7 @@ jobs:
           $tailscaleIp = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
           $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
           $chainCount = "${{ steps.session.outputs.CHAIN_COUNT }}"
-          
-          # Get rdpuser's actual profile path
-          $rdpUserHome = "C:\Users\rdpuser"
-          if (Test-Path "C:\rdp-persist\rdpuser-home.txt") {
-            $savedPath = (Get-Content "C:\rdp-persist\rdpuser-home.txt" -Raw).Trim()
-            if ($savedPath) { $rdpUserHome = $savedPath }
-          }
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           
           Write-Host ""
           Write-Host "=============================================="
@@ -688,13 +615,12 @@ jobs:
           Write-Host ""
           Write-Host "rdpuser profile path: $rdpUserHome"
           Write-Host ""
-          Write-Host "Persistent directories (auto-saved from rdpuser):"
+          Write-Host "Persistent directories:"
           Write-Host "  $rdpUserHome\projects"
           Write-Host "  $rdpUserHome\.clawdbot"
           Write-Host "  $rdpUserHome\.npm-global"
           Write-Host "  $rdpUserHome\scoop"
           Write-Host ""
-          Write-Host "All data in rdpuser profile persists across sessions!"
           Write-Host "Session will auto-chain in ~${{ env.SESSION_TIMEOUT_MINUTES }} minutes"
           Write-Host "=============================================="
 
@@ -703,52 +629,22 @@ jobs:
         shell: pwsh
         run: |
           $persistDir = "${{ env.PERSIST_DIR }}"
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           
-          # Get rdpuser's actual profile path
-          $rdpUserHome = "C:\Users\rdpuser"
+          Write-Host "Setting up auto-save for: $rdpUserHome"
           
-          # Check saved profile path first
-          if (Test-Path "C:\rdp-persist\rdpuser-home.txt") {
-            $savedPath = (Get-Content "C:\rdp-persist\rdpuser-home.txt" -Raw).Trim()
-            if ($savedPath -and (Test-Path $savedPath)) {
-              $rdpUserHome = $savedPath
-            }
-          }
-          
-          # Also check registry as backup
-          $username = "rdpuser"
-          try {
-            $userSid = (Get-LocalUser -Name $username -ErrorAction SilentlyContinue).SID.Value
-            if ($userSid) {
-              $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
-              if (Test-Path $profileKey) {
-                $regProfile = (Get-ItemProperty -Path $profileKey -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath
-                if ($regProfile -and (Test-Path $regProfile)) {
-                  $rdpUserHome = $regProfile
-                }
-              }
-            }
-          } catch { }
-          
-          Write-Host "Auto-save will save from rdpuser: $rdpUserHome"
-          
-          # Create persist directory
-          New-Item -ItemType Directory -Path $persistDir -Force | Out-Null
-          
-          # Store rdpuser's USERPROFILE so next session can patch paths
+          # Store rdpuser's USERPROFILE for next session
           $rdpUserHome | Out-File -FilePath "$persistDir\userprofile.txt" -Encoding UTF8 -NoNewline
-          Write-Host "Saved USERPROFILE path to $persistDir\userprofile.txt"
           
-          # Create save script - saves rdpuser's data
+          # Create save script
           $saveScript = @"
           `$persistDir = "$persistDir"
           `$userHome = "$rdpUserHome"
-          `$appData = "`$userHome\AppData"
           `$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
           
           Write-Host "[`$timestamp] Auto-saving rdpuser data from `$userHome..."
           
-          # Directories to persist (user files)
+          # Directories to persist
           `$dirsToSave = @(
             "`$userHome\projects",
             "`$userHome\Documents",
@@ -756,63 +652,45 @@ jobs:
             "`$userHome\.ssh",
             "`$userHome\.gitconfig",
             "`$userHome\.vscode",
-            "`$userHome\.local",           # local bin
-            "`$userHome\.npm-global",      # NPM global packages (includes clawdbot!)
-            "`$userHome\.npmrc",           # NPM config
-            "`$userHome\scoop",            # Scoop + all scoop-installed apps!
-            "`$userHome\.clawdbot",        # Clawdbot config directory
-            "`$userHome\clawd",            # Clawdbot identity/memory docs
-            "`$userHome\.config"           # Config directory
+            "`$userHome\.local",
+            "`$userHome\.npm-global",
+            "`$userHome\.npmrc",
+            "`$userHome\scoop",
+            "`$userHome\.clawdbot",
+            "`$userHome\clawd",
+            "`$userHome\.config",
+            "`$userHome\AppData\Roaming\Code",
+            "`$userHome\AppData\Roaming\npm",
+            "`$userHome\AppData\Roaming\npm-cache",
+            "`$userHome\AppData\Local\Programs",
+            "`$userHome\AppData\Roaming\clawdbot",
+            "`$userHome\AppData\Local\clawdbot",
+            "`$userHome\AppData\Local\pnpm",
+            "`$userHome\AppData\Local\pnpm-cache"
           )
           
-          # AppData directories to persist (app settings)
-          `$appDataToSave = @(
-            "`$appData\Roaming\Code",           # VS Code settings
-            "`$appData\Roaming\npm",            # NPM global packages/config
-            "`$appData\Roaming\npm-cache",      # NPM cache
-            "`$appData\Local\Programs",         # Some apps install here
-            "`$appData\Roaming\clawdbot",       # Clawdbot settings
-            "`$appData\Local\clawdbot",         # Clawdbot local data
-            "`$appData\Local\pnpm",             # pnpm
-            "`$appData\Local\pnpm-cache"        # pnpm cache
-          )
-          
-          # Create temp directory for backup
           `$tempBackup = "`$env:TEMP\rdp-backup-`$timestamp"
           New-Item -ItemType Directory -Path `$tempBackup -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$tempBackup\AppData\Roaming" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$tempBackup\AppData\Local" -Force | Out-Null
           
-          # Save user directories
           foreach (`$dir in `$dirsToSave) {
-            if (Test-Path `$dir) {
-              `$name = Split-Path `$dir -Leaf
-              Copy-Item -Path `$dir -Destination "`$tempBackup\`$name" -Recurse -Force -ErrorAction SilentlyContinue
-              Write-Host "  Saved: `$name"
-            }
-          }
-          
-          # Save AppData directories
-          foreach (`$dir in `$appDataToSave) {
             if (Test-Path `$dir) {
               `$relativePath = `$dir -replace [regex]::Escape("`$userHome\"), ""
               `$destPath = "`$tempBackup\`$relativePath"
               `$destParent = Split-Path `$destPath -Parent
-              New-Item -ItemType Directory -Path `$destParent -Force -ErrorAction SilentlyContinue | Out-Null
+              if (`$destParent -and -not (Test-Path `$destParent)) {
+                New-Item -ItemType Directory -Path `$destParent -Force | Out-Null
+              }
               Copy-Item -Path `$dir -Destination `$destPath -Recurse -Force -ErrorAction SilentlyContinue
               Write-Host "  Saved: `$relativePath"
             }
           }
           
-          # Create zip archive - use temp file to avoid lock issues
           if (Test-Path "`$tempBackup\*") {
             `$tempZip = "`$persistDir\userdata-`$timestamp.zip"
             `$finalZip = "`$persistDir\userdata.zip"
             
-            # Create new zip with timestamp name
             Compress-Archive -Path "`$tempBackup\*" -DestinationPath `$tempZip -Force
             
-            # Remove old zip if exists (with retries for file lock)
             if (Test-Path `$finalZip) {
               `$retries = 3
               while (`$retries -gt 0) {
@@ -821,26 +699,16 @@ jobs:
                   break
                 } catch {
                   `$retries--
-                  if (`$retries -gt 0) {
-                    Write-Host "  Zip locked, retrying in 2s..."
-                    Start-Sleep -Seconds 2
-                  } else {
-                    Write-Host "  Could not remove old zip, keeping new one with timestamp"
-                  }
+                  Start-Sleep -Seconds 2
                 }
               }
             }
             
-            # Rename temp zip to final name
             if (-not (Test-Path `$finalZip)) {
               Move-Item -Path `$tempZip -Destination `$finalZip -Force
-              Write-Host "Data saved to `$finalZip"
-            } else {
-              Write-Host "Data saved to `$tempZip (old zip was locked)"
             }
           }
           
-          # Cleanup
           Remove-Item -Path `$tempBackup -Recurse -Force -ErrorAction SilentlyContinue
           "@
           
@@ -866,15 +734,12 @@ jobs:
           
           Write-Host "Chain trigger scheduled in $chainMinutes minutes"
           
-          # Create scheduled task to save data and trigger next workflow
           $script = @"
-          # First, run final save
           Write-Host "Running final data save before chain..."
           & powershell.exe -ExecutionPolicy Bypass -File "$persistDir\auto-save.ps1"
           
           Start-Sleep -Seconds 10
           
-          # Trigger next workflow
           `$headers = @{
             "Authorization" = "Bearer ${{ secrets.GH_PAT }}"
             "Accept" = "application/vnd.github.v3+json"
@@ -895,7 +760,6 @@ jobs:
           $scriptPath = "$env:TEMP\chain-trigger.ps1"
           $script | Out-File -FilePath $scriptPath -Encoding UTF8
           
-          # Schedule the trigger
           $triggerTime = (Get-Date).AddMinutes($chainMinutes)
           $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`""
           $trigger = New-ScheduledTaskTrigger -Once -At $triggerTime
@@ -911,28 +775,26 @@ jobs:
           $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
           
           Write-Host "Keeping session alive until: $endTime"
-          Write-Host "Press Ctrl+C in GitHub Actions to manually stop"
           
           while ((Get-Date) -lt $endTime) {
-            # Heartbeat
             $remaining = ($endTime - (Get-Date)).TotalMinutes
             Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session active - $([math]::Round($remaining)) min remaining"
             
-            # Check Tailscale connection
+            # Check Tailscale
             $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
             if ($status.BackendState -ne "Running") {
               Write-Host "Tailscale disconnected, reconnecting..."
               & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAILSCALE_AUTHKEY }}"
             }
             
-            # Prevent screen lock/idle
+            # Prevent idle
             Add-Type -AssemblyName System.Windows.Forms
             [System.Windows.Forms.Cursor]::Position = [System.Windows.Forms.Cursor]::Position
             
-            Start-Sleep -Seconds 300  # 5 minute intervals
+            Start-Sleep -Seconds 300
           }
           
-          Write-Host "Session timeout reached, next chain should be starting..."
+          Write-Host "Session timeout reached"
 
       # ========== SAVE DATA BEFORE EXIT ==========
       - name: Final save before exit
@@ -947,36 +809,23 @@ jobs:
             & powershell.exe -ExecutionPolicy Bypass -File "$persistDir\auto-save.ps1"
           }
           
-          # Consolidate any timestamped zips - use the newest one
+          # Consolidate zips
           $zips = Get-ChildItem -Path $persistDir -Filter "userdata*.zip" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
           if ($zips.Count -gt 1) {
             $newest = $zips[0]
-            Write-Host "Found $($zips.Count) zip files, using newest: $($newest.Name)"
-            
-            # If newest isn't userdata.zip, try to rename it
             if ($newest.Name -ne "userdata.zip") {
               $finalZip = "$persistDir\userdata.zip"
-              
-              # Remove old userdata.zip if it exists
               if (Test-Path $finalZip) {
-                try {
-                  Remove-Item -Path $finalZip -Force -ErrorAction Stop
-                } catch {
-                  Write-Host "Could not remove old userdata.zip, will upload timestamped version"
-                }
+                Remove-Item -Path $finalZip -Force -ErrorAction SilentlyContinue
               }
-              
               if (-not (Test-Path $finalZip)) {
                 Move-Item -Path $newest.FullName -Destination $finalZip -Force
-                Write-Host "Renamed $($newest.Name) to userdata.zip"
               }
             }
-            
-            # Clean up old timestamped zips
+            # Cleanup old
             foreach ($zip in $zips | Select-Object -Skip 1) {
               if ($zip.Name -ne "userdata.zip") {
                 Remove-Item -Path $zip.FullName -Force -ErrorAction SilentlyContinue
-                Write-Host "Removed old zip: $($zip.Name)"
               }
             }
           }
@@ -996,14 +845,3 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
           overwrite: true
-
-      - name: Cleanup
-        if: always()
-        shell: pwsh
-        run: |
-          Write-Host "Cleaning up session..."
-          
-          # Logout from Tailscale (optional - keeps device in network for reconnection)
-          # & "C:\Program Files\Tailscale\tailscale.exe" logout
-          
-          Write-Host "Session ended gracefully"
