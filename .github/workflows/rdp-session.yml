@@ -37,7 +37,6 @@ jobs:
             $sessionId = [guid]::NewGuid().ToString().Substring(0,8)
           }
           
-          # Handle chain count safely
           $chainCountInput = "${{ github.event.inputs.chain_count }}"
           if ([string]::IsNullOrEmpty($chainCountInput)) {
             $chainCount = 0
@@ -45,7 +44,6 @@ jobs:
             $chainCount = [int]$chainCountInput
           }
           
-          # Check if this is a repository_dispatch event
           if ("${{ github.event_name }}" -eq "repository_dispatch") {
             $payloadCount = "${{ github.event.client_payload.chain_count }}"
             if (-not [string]::IsNullOrEmpty($payloadCount)) {
@@ -77,16 +75,13 @@ jobs:
         run: |
           Write-Host "Installing Tailscale..."
           
-          # Download Tailscale MSI
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
           $installer = "$env:TEMP\tailscale-setup.msi"
           
           Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
           
-          # Silent install
           Start-Process msiexec.exe -ArgumentList "/i", $installer, "/quiet", "/norestart" -Wait
           
-          # Add to PATH
           $env:PATH += ";C:\Program Files\Tailscale"
           echo "C:\Program Files\Tailscale" >> $env:GITHUB_PATH
           
@@ -102,11 +97,9 @@ jobs:
           
           Write-Host "Connecting to Tailscale as: $hostname"
           
-          # Start Tailscale service
           Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
           
-          # Authenticate with Tailscale
           & "C:\Program Files\Tailscale\tailscale.exe" up `
             --authkey="$env:TAILSCALE_AUTHKEY" `
             --hostname="$hostname" `
@@ -115,14 +108,12 @@ jobs:
           
           Start-Sleep -Seconds 10
           
-          # Get and display Tailscale IP
           $status = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
           Write-Host "=========================================="
           Write-Host "TAILSCALE IP: $status"
           Write-Host "HOSTNAME: $hostname"
           Write-Host "=========================================="
           
-          # Save IP for later use
           echo "TAILSCALE_IP=$status" >> $env:GITHUB_OUTPUT
 
       # ========== RDP SETUP ==========
@@ -131,16 +122,12 @@ jobs:
         run: |
           Write-Host "Configuring RDP access..."
           
-          # Enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           
-          # Configure firewall for RDP
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           
-          # Allow RDP through Windows Firewall
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=tcp localport=3389
           
-          # Set Network Level Authentication (optional, more secure)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
           
           Write-Host "RDP configured successfully"
@@ -154,22 +141,18 @@ jobs:
           $password = $env:RDP_PASSWORD
           
           if ([string]::IsNullOrEmpty($password)) {
-            # Generate random password if not provided
             $password = -join ((65..90) + (97..122) + (48..57) + (33,35,36,37,38,42) | Get-Random -Count 16 | ForEach-Object {[char]$_})
             Write-Host "Generated password: $password"
           }
           
-          # Create user
           $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
           
           try {
             New-LocalUser -Name $username -Password $securePassword -FullName "RDP User" -Description "GitHub Actions RDP User" -PasswordNeverExpires
           } catch {
-            # User might already exist, update password
             Set-LocalUser -Name $username -Password $securePassword
           }
           
-          # Add to necessary groups
           Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
           
@@ -191,17 +174,14 @@ jobs:
           
           Write-Host "Initializing user profile for rdpuser..."
           
-          # Create persist dir if not exists
           New-Item -ItemType Directory -Path $persistDir -Force | Out-Null
           
           $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
           
-          # Create a script to run as rdpuser to initialize profile and get actual path
           $initScript = @"
           Write-Host "Profile initialized for: `$env:USERNAME"
           Write-Host "USERPROFILE: `$env:USERPROFILE"
           
-          # Create standard directories
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\Documents" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\Desktop" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\Downloads" -Force | Out-Null
@@ -210,15 +190,14 @@ jobs:
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\.npm-global" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\.local\bin" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\scoop" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\clawd" -Force | Out-Null
           
-          # Output the actual profile path
           "`$env:USERPROFILE" | Out-File -FilePath "$persistDir\actual-userprofile.txt" -Encoding UTF8 -NoNewline
           "@
           
           $initScriptPath = "$env:TEMP\init-profile.ps1"
           $initScript | Out-File -FilePath $initScriptPath -Encoding UTF8
           
-          # Run as rdpuser to create profile
           try {
             $processInfo = New-Object System.Diagnostics.ProcessStartInfo
             $processInfo.FileName = "powershell.exe"
@@ -243,7 +222,6 @@ jobs:
             Write-Host "Could not run as rdpuser directly: $_"
             Write-Host "Creating profile manually..."
             
-            # Fallback: create profile manually
             $rdpUserHome = "C:\Users\rdpuser"
             New-Item -ItemType Directory -Path $rdpUserHome -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\Documents" -Force | Out-Null
@@ -254,11 +232,11 @@ jobs:
             New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\scoop" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\clawd" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local\Temp" -Force | Out-Null
             
-            # Set profile in registry
             $profileList = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
             $userSid = (Get-LocalUser -Name $username).SID.Value
             
@@ -272,11 +250,9 @@ jobs:
               Set-ItemProperty -Path $profileKey -Name "RefCount" -Value 0 -Type DWord
             }
             
-            # Save the path
             $rdpUserHome | Out-File -FilePath "$persistDir\actual-userprofile.txt" -Encoding UTF8 -NoNewline
           }
           
-          # Get the actual profile path
           $rdpUserHome = "C:\Users\rdpuser"
           if (Test-Path "$persistDir\actual-userprofile.txt") {
             $actualProfile = (Get-Content "$persistDir\actual-userprofile.txt" -Raw).Trim()
@@ -285,7 +261,6 @@ jobs:
             }
           }
           
-          # Also check registry
           try {
             $userSid = (Get-LocalUser -Name $username -ErrorAction SilentlyContinue).SID.Value
             if ($userSid) {
@@ -301,17 +276,15 @@ jobs:
           
           Write-Host "rdpuser USERPROFILE: $rdpUserHome"
           
-          # Save for other steps
           echo "RDPUSER_HOME=$rdpUserHome" >> $env:GITHUB_OUTPUT
           $rdpUserHome | Out-File -FilePath "$persistDir\rdpuser-home.txt" -Encoding UTF8 -NoNewline
           
-          # Grant permissions
           $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
           Write-Host "Profile initialization complete: $rdpUserHome"
 
-      # ========== NOW TRANSFER PERSISTED DATA (after we know USERPROFILE) ==========
+      # ========== TRANSFER PERSISTED DATA (after we know USERPROFILE) ==========
       - name: Transfer persisted data to rdpuser
         shell: pwsh
         run: |
@@ -320,7 +293,7 @@ jobs:
           
           Write-Host "Transferring persisted data to: $rdpUserHome"
           
-          # Find the zip file to restore
+          # Find zip to restore
           $zipToRestore = $null
           if (Test-Path "$persistDir\userdata.zip") {
             $zipToRestore = "$persistDir\userdata.zip"
@@ -339,51 +312,43 @@ jobs:
           
           Write-Host "Restoring from: $zipToRestore"
           
-          # Read the OLD userprofile path from previous session
+          # Read old USERPROFILE path
           $oldUserHome = ""
           if (Test-Path "$persistDir\userprofile.txt") {
             $oldUserHome = (Get-Content "$persistDir\userprofile.txt" -Raw).Trim()
             Write-Host "Previous session USERPROFILE: $oldUserHome"
           }
           
-          # Extract to rdpuser's profile
+          # Extract to rdpuser profile
           Expand-Archive -Path $zipToRestore -DestinationPath $rdpUserHome -Force
           
           Write-Host "Data extracted to $rdpUserHome"
           
-          # Paths to replace (old runner paths -> new rdpuser path)
+          # Paths to replace
           $pathsToReplace = @(
             "C:\Users\runneradmin",
             "C:\Users\runner",
             "C:\Users\ContainerAdministrator"
           )
           
-          # Add old USERPROFILE if different
           if ($oldUserHome -and ($oldUserHome -ne $rdpUserHome) -and ($pathsToReplace -notcontains $oldUserHome)) {
             $pathsToReplace += $oldUserHome
           }
           
-          Write-Host "Patching these paths to $rdpUserHome :"
+          Write-Host "Patching paths to $rdpUserHome :"
           $pathsToReplace | ForEach-Object { Write-Host "  - $_" }
           
-          # Config files that may contain hardcoded paths
-          $configFiles = @(
-            "$rdpUserHome\.clawdbot\clawdbot.json",
-            "$rdpUserHome\.clawdbot\agents\main\agent\auth-profiles.json",
-            "$rdpUserHome\.clawdbot\agents\main\agent.json",
-            "$rdpUserHome\.npmrc",
-            "$rdpUserHome\.gitconfig",
-            "$rdpUserHome\.config\clawdbot\settings.json"
-          )
-          
-          # Also find any JSON files in .clawdbot that might have paths
+          # Find all JSON files in .clawdbot to patch
+          $configFiles = @()
           if (Test-Path "$rdpUserHome\.clawdbot") {
             Get-ChildItem -Path "$rdpUserHome\.clawdbot" -Filter "*.json" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-              if ($configFiles -notcontains $_.FullName) {
-                $configFiles += $_.FullName
-              }
+              $configFiles += $_.FullName
             }
           }
+          
+          # Add other config files
+          $configFiles += "$rdpUserHome\.npmrc"
+          $configFiles += "$rdpUserHome\.gitconfig"
           
           foreach ($file in $configFiles) {
             if (Test-Path $file) {
@@ -392,7 +357,6 @@ jobs:
                 $patched = $false
                 
                 foreach ($oldPath in $pathsToReplace) {
-                  # Check all path format variations
                   $oldBackslash = $oldPath
                   $oldForward = $oldPath -replace '\\', '/'
                   $oldEscaped = $oldPath -replace '\\', '\\\\'
@@ -406,7 +370,7 @@ jobs:
                     $content = $content -replace [regex]::Escape($oldBackslash), $newBackslash
                     $content = $content -replace [regex]::Escape($oldForward), $newForward
                     $patched = $true
-                    Write-Host "  Patched $oldPath in: $file"
+                    Write-Host "  Patched: $file"
                   }
                 }
                 
@@ -417,12 +381,10 @@ jobs:
             }
           }
           
-          # Set ownership for rdpuser
-          Write-Host "Setting ownership for rdpuser..."
+          # Set ownership
           $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
-          # List what was restored
           Write-Host "Restored contents:"
           Get-ChildItem -Path $rdpUserHome -Force | ForEach-Object { Write-Host "  $_" }
 
@@ -438,13 +400,14 @@ jobs:
           New-Item -ItemType Directory -Path "$rdpUserHome\.clawdbot" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\scoop" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\clawd" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
           
           # Set machine-wide environment variables
           [Environment]::SetEnvironmentVariable("CLAWDBOT_STATE_DIR", "$rdpUserHome\.clawdbot", "Machine")
-          [Environment]::SetEnvironmentVariable("CLAWDBOT_WORKSPACE", "$rdpUserHome\projects", "Machine")
+          [Environment]::SetEnvironmentVariable("CLAWDBOT_WORKSPACE", "$rdpUserHome\clawd", "Machine")
           [Environment]::SetEnvironmentVariable("SCOOP", "$rdpUserHome\scoop", "Machine")
           [Environment]::SetEnvironmentVariable("NPM_CONFIG_PREFIX", "$rdpUserHome\.npm-global", "Machine")
           
@@ -462,13 +425,12 @@ jobs:
           }
           [Environment]::SetEnvironmentVariable("Path", $currentPath, "Machine")
           
-          # Set ownership
           $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
           Write-Host "Environment configured:"
           Write-Host "  CLAWDBOT_STATE_DIR = $rdpUserHome\.clawdbot"
-          Write-Host "  CLAWDBOT_WORKSPACE = $rdpUserHome\projects"
+          Write-Host "  CLAWDBOT_WORKSPACE = $rdpUserHome\clawd"
           Write-Host "  SCOOP = $rdpUserHome\scoop"
           Write-Host "  NPM_CONFIG_PREFIX = $rdpUserHome\.npm-global"
 
@@ -477,18 +439,14 @@ jobs:
         run: |
           Write-Host "Installing development tools..."
           
-          # Install Chocolatey
           Set-ExecutionPolicy Bypass -Scope Process -Force
           [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
           iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
           
-          # Refresh PATH
           $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
-          # Install common dev tools
           choco install -y git vscode nodejs-lts python3 7zip --no-progress
           
-          # Refresh PATH again
           $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
           Write-Host "Development tools installed"
@@ -501,10 +459,8 @@ jobs:
           
           Write-Host "Configuring NPM for rdpuser: $rdpUserHome"
           
-          # Create directory
           New-Item -ItemType Directory -Path $npmGlobalDir -Force | Out-Null
           
-          # Set env for this session
           $env:NPM_CONFIG_PREFIX = $npmGlobalDir
           $env:PATH = "$npmGlobalDir;$env:PATH"
           
@@ -519,7 +475,6 @@ jobs:
           
           Write-Host "Installing Scoop to: $scoopDir"
           
-          # Check if Scoop already exists (restored)
           if (Test-Path "$scoopDir\shims\scoop.ps1") {
             Write-Host "Scoop already installed (restored from previous session)"
             $env:SCOOP = $scoopDir
@@ -531,62 +486,210 @@ jobs:
             Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
           }
           
-          # Install common tools
-          scoop install git go ffmpeg yt-dlp --no-cache 2>$null
-          
-          # Set ownership
           $null = cmd /c "icacls `"$scoopDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
           Write-Host "Scoop ready!"
 
-      - name: Install Custom Apps
+      - name: Restore scoop apps from list
         shell: pwsh
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $npmGlobalDir = "$rdpUserHome\.npm-global"
-          $localBin = "$rdpUserHome\.local\bin"
-          $scoopShims = "$rdpUserHome\scoop\shims"
+          $scoopAppsFile = "$rdpUserHome\scoop\installed-apps.txt"
           
-          Write-Host "Using rdpuser profile: $rdpUserHome"
+          $env:SCOOP = "$rdpUserHome\scoop"
+          $env:PATH = "$rdpUserHome\scoop\shims;$env:PATH"
           
-          # Set PATH for this session
-          $env:PATH = "$npmGlobalDir;$localBin;$scoopShims;$env:PATH"
-          $env:NPM_CONFIG_PREFIX = $npmGlobalDir
-          
-          # Check if clawdbot already installed
-          $clawdbotExists = $false
-          if (Test-Path "$npmGlobalDir\clawdbot.cmd") { $clawdbotExists = $true }
-          if (Test-Path "$npmGlobalDir\node_modules\clawdbot") { $clawdbotExists = $true }
-          if (Get-Command clawdbot -ErrorAction SilentlyContinue) { $clawdbotExists = $true }
-          
-          if ($clawdbotExists) {
-            Write-Host "=============================================="
-            Write-Host "Clawdbot FOUND (restored from previous session)"
-            Write-Host "=============================================="
-            Write-Host "Updating to latest version..."
-            npm update -g clawdbot
+          if (Test-Path $scoopAppsFile) {
+            Write-Host "Reinstalling scoop apps from previous session..."
+            
+            $content = Get-Content $scoopAppsFile -Raw
+            $apps = $content -split "`n" | Where-Object { $_ -match '^\s*(\S+)\s+[\d\.]' } | ForEach-Object {
+              if ($_ -match '^\s*(\S+)') { $matches[1] }
+            } | Where-Object { $_ -and $_ -ne "Name" }
+            
+            foreach ($app in $apps) {
+              Write-Host "  Installing: $app"
+              scoop install $app --no-cache 2>$null
+            }
+            
+            Write-Host "Scoop apps restored"
           } else {
-            Write-Host "=============================================="
-            Write-Host "Installing Clawdbot..."
-            Write-Host "=============================================="
-            npm install -g clawdbot@latest
+            Write-Host "No scoop apps list found, installing defaults..."
+            scoop install git go ffmpeg yt-dlp --no-cache 2>$null
+          }
+
+      - name: Restore npm global packages from list
+        shell: pwsh
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          $npmListFile = "$rdpUserHome\.npm-global\installed-packages.txt"
+          
+          $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
+          $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+          
+          if (Test-Path $npmListFile) {
+            Write-Host "Reinstalling npm global packages from previous session..."
+            
+            $content = Get-Content $npmListFile -Raw
+            $packages = $content -split "`n" | Where-Object { $_ -match '[+`]--\s+(\S+)@' } | ForEach-Object {
+              if ($_ -match '[+`]--\s+(\S+)@') { $matches[1] }
+            } | Where-Object { $_ -and $_ -ne "npm" }
+            
+            foreach ($pkg in $packages) {
+              Write-Host "  Installing: $pkg"
+              npm install -g $pkg 2>$null
+            }
+            
+            Write-Host "NPM packages restored"
+          } else {
+            Write-Host "No npm packages list found, installing moltbot..."
+            npm install -g moltbot@latest
           }
           
-          # Verify installation
-          if (Get-Command clawdbot -ErrorAction SilentlyContinue) {
-            Write-Host "Clawdbot installed successfully!"
-            clawdbot --version
-          } else {
-            Write-Host "Clawdbot installation may need PATH refresh on login"
+          # Ensure moltbot is installed
+          if (-not (Get-Command moltbot -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing moltbot..."
+            npm install -g moltbot@latest
           }
+          
+          $null = cmd /c "icacls `"$rdpUserHome\.npm-global`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
+
+      - name: Configure Moltbot
+        shell: pwsh
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          $clawdbotDir = "$rdpUserHome\.clawdbot"
+          $clawdWorkspace = "$rdpUserHome\clawd"
+          
+          # Skip if already configured (restored from previous session)
+          if (Test-Path "$clawdbotDir\moltbot.json") {
+            Write-Host "Moltbot already configured (restored from previous session)"
+            exit 0
+          }
+          
+          Write-Host "Pre-configuring Moltbot..."
+          
+          # Create directories
+          New-Item -ItemType Directory -Path $clawdbotDir -Force | Out-Null
+          New-Item -ItemType Directory -Path "$clawdbotDir\agents\main\agent" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$clawdbotDir\credentials" -Force | Out-Null
+          New-Item -ItemType Directory -Path $clawdWorkspace -Force | Out-Null
+          
+          # Create moltbot.json config
+          $workspacePath = $clawdWorkspace -replace '\\', '/'
+          $config = @"
+{
+  // Moltbot config - GitHub Actions RDP
+  
+  // Telegram channel
+  channels: {
+    telegram: {
+      enabled: true
+    }
+  },
+  
+  // Model preferences - Antigravity first
+  agents: {
+    defaults: {
+      workspace: "$workspacePath",
+      model: "claude-sonnet",
+      provider: "antigravity"
+    }
+  },
+  
+  // Auth order - prefer antigravity
+  auth: {
+    order: {
+      "claude-sonnet": ["antigravity", "anthropic"],
+      "claude-opus": ["antigravity", "anthropic"],
+      "default": ["antigravity", "anthropic", "openai"]
+    }
+  }
+}
+"@
+          
+          $config | Out-File -FilePath "$clawdbotDir\moltbot.json" -Encoding UTF8
+          Write-Host "Created moltbot.json"
+          
+          # Set Telegram token via environment
+          [Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "$env:TELEGRAM_BOT_TOKEN", "Machine")
+          Write-Host "Set TELEGRAM_BOT_TOKEN environment variable"
+          
+          # Create basic workspace files
+          $agentsMd = @"
+# Agents
+
+You are a helpful AI assistant running on a GitHub Actions RDP session.
+"@
+          $agentsMd | Out-File -FilePath "$clawdWorkspace\AGENTS.md" -Encoding UTF8
+          
+          # Create empty auth-profiles.json
+          $authProfiles = @"
+{
+  "profiles": {},
+  "version": 1
+}
+"@
+          $authProfiles | Out-File -FilePath "$clawdbotDir\agents\main\agent\auth-profiles.json" -Encoding UTF8
           
           # Set ownership
-          $null = cmd /c "icacls `"$npmGlobalDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $null = cmd /c "icacls `"$clawdbotDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $null = cmd /c "icacls `"$clawdWorkspace`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
           Write-Host ""
-          Write-Host "Custom apps step complete"
+          Write-Host "=============================================="
+          Write-Host "Moltbot pre-configured!"
+          Write-Host "=============================================="
+          Write-Host "Telegram: Ready (token from secrets)"
+          Write-Host "Antigravity: Will authenticate in next step"
+          Write-Host "=============================================="
+
+      - name: Authenticate Moltbot with Antigravity
+        shell: pwsh
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          $authProfilesPath = "$rdpUserHome\.clawdbot\agents\main\agent\auth-profiles.json"
+          
+          # Set environment for moltbot
+          $env:CLAWDBOT_STATE_DIR = "$rdpUserHome\.clawdbot"
+          $env:CLAWDBOT_WORKSPACE = "$rdpUserHome\clawd"
+          $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
+          $env:PATH = "$rdpUserHome\.npm-global;$rdpUserHome\scoop\shims;$env:PATH"
+          
+          # Check if already authenticated
+          if (Test-Path $authProfilesPath) {
+            $authContent = Get-Content $authProfilesPath -Raw
+            if ($authContent -match "antigravity") {
+              Write-Host "Antigravity already authenticated (restored from previous session)"
+              exit 0
+            }
+          }
+          
+          Write-Host "=============================================="
+          Write-Host "Antigravity OAuth Login"
+          Write-Host "=============================================="
+          Write-Host ""
+          Write-Host "Starting interactive login..."
+          Write-Host "A browser window will open for authentication."
+          Write-Host ""
+          
+          # Run moltbot auth login
+          # This will open a browser for OAuth
+          moltbot models auth login --provider antigravity
+          
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "Antigravity authentication complete!"
+          Write-Host "=============================================="
+          
+          # Set ownership
+          $null = cmd /c "icacls `"$rdpUserHome\.clawdbot`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
 
       - name: Display Connection Info
         id: connection
@@ -615,9 +718,15 @@ jobs:
           Write-Host ""
           Write-Host "rdpuser profile path: $rdpUserHome"
           Write-Host ""
+          Write-Host "Moltbot:"
+          Write-Host "  Config: $rdpUserHome\.clawdbot\moltbot.json"
+          Write-Host "  Workspace: $rdpUserHome\clawd"
+          Write-Host "  Start: moltbot gateway"
+          Write-Host ""
           Write-Host "Persistent directories:"
+          Write-Host "  $rdpUserHome\.clawdbot (config, oauth, sessions)"
+          Write-Host "  $rdpUserHome\clawd (workspace)"
           Write-Host "  $rdpUserHome\projects"
-          Write-Host "  $rdpUserHome\.clawdbot"
           Write-Host "  $rdpUserHome\.npm-global"
           Write-Host "  $rdpUserHome\scoop"
           Write-Host ""
@@ -644,64 +753,94 @@ jobs:
           
           Write-Host "[`$timestamp] Auto-saving rdpuser data from `$userHome..."
           
-          # Directories to persist
-          `$dirsToSave = @(
+          `$tempBackup = "`$env:TEMP\rdp-backup-`$timestamp"
+          New-Item -ItemType Directory -Path `$tempBackup -Force | Out-Null
+          
+          # === MOLTBOT/CLAWDBOT - FULL SAVE (critical auth + sessions) ===
+          if (Test-Path "`$userHome\.clawdbot") {
+            Write-Host "  Saving .clawdbot (moltbot config, oauth, sessions)..."
+            Copy-Item -Path "`$userHome\.clawdbot" -Destination "`$tempBackup\.clawdbot" -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "  Saved: .clawdbot (full)"
+          }
+          
+          # === MOLTBOT WORKSPACE (agent identity, memory) ===
+          if (Test-Path "`$userHome\clawd") {
+            Write-Host "  Saving clawd workspace (AGENTS.md, MEMORY.md, etc.)..."
+            Copy-Item -Path "`$userHome\clawd" -Destination "`$tempBackup\clawd" -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "  Saved: clawd (full)"
+          }
+          
+          # === SELECTIVE SCOOP SAVE ===
+          if (Test-Path "`$userHome\scoop") {
+            New-Item -ItemType Directory -Path "`$tempBackup\scoop" -Force | Out-Null
+            
+            if (Test-Path "`$userHome\scoop\shims") {
+              Copy-Item -Path "`$userHome\scoop\shims" -Destination "`$tempBackup\scoop\shims" -Recurse -Force
+              Write-Host "  Saved: scoop\shims"
+            }
+            
+            `$installedApps = scoop list 2>`$null | Out-String
+            `$installedApps | Out-File -FilePath "`$tempBackup\scoop\installed-apps.txt" -Encoding UTF8
+            Write-Host "  Saved: scoop installed apps list"
+            
+            if (Test-Path "`$userHome\scoop\config") {
+              Copy-Item -Path "`$userHome\scoop\config" -Destination "`$tempBackup\scoop\config" -Recurse -Force
+            }
+            
+            if (Test-Path "`$userHome\scoop\persist") {
+              Copy-Item -Path "`$userHome\scoop\persist" -Destination "`$tempBackup\scoop\persist" -Recurse -Force
+              Write-Host "  Saved: scoop\persist"
+            }
+          }
+          
+          # === SELECTIVE NPM-GLOBAL SAVE ===
+          if (Test-Path "`$userHome\.npm-global") {
+            New-Item -ItemType Directory -Path "`$tempBackup\.npm-global" -Force | Out-Null
+            
+            Get-ChildItem -Path "`$userHome\.npm-global" -File -ErrorAction SilentlyContinue | Copy-Item -Destination "`$tempBackup\.npm-global\" -Force
+            
+            `$npmList = npm list -g --depth=0 2>`$null | Out-String
+            `$npmList | Out-File -FilePath "`$tempBackup\.npm-global\installed-packages.txt" -Encoding UTF8
+            Write-Host "  Saved: npm global packages list"
+            
+            if (Test-Path "`$userHome\.npm-global\package.json") {
+              Copy-Item -Path "`$userHome\.npm-global\package.json" -Destination "`$tempBackup\.npm-global\" -Force
+            }
+          }
+          
+          # === USER DATA (small, always save fully) ===
+          `$smallDirs = @(
             "`$userHome\projects",
             "`$userHome\Documents",
             "`$userHome\Desktop",
             "`$userHome\.ssh",
             "`$userHome\.gitconfig",
-            "`$userHome\.vscode",
             "`$userHome\.local",
-            "`$userHome\.npm-global",
             "`$userHome\.npmrc",
-            "`$userHome\scoop",
-            "`$userHome\.clawdbot",
-            "`$userHome\clawd",
             "`$userHome\.config",
-            "`$userHome\AppData\Roaming\Code",
-            "`$userHome\AppData\Roaming\npm",
-            "`$userHome\AppData\Roaming\npm-cache",
-            "`$userHome\AppData\Local\Programs",
-            "`$userHome\AppData\Roaming\clawdbot",
-            "`$userHome\AppData\Local\clawdbot",
-            "`$userHome\AppData\Local\pnpm",
-            "`$userHome\AppData\Local\pnpm-cache"
+            "`$userHome\.vscode"
           )
           
-          `$tempBackup = "`$env:TEMP\rdp-backup-`$timestamp"
-          New-Item -ItemType Directory -Path `$tempBackup -Force | Out-Null
-          
-          foreach (`$dir in `$dirsToSave) {
+          foreach (`$dir in `$smallDirs) {
             if (Test-Path `$dir) {
-              `$relativePath = `$dir -replace [regex]::Escape("`$userHome\"), ""
-              `$destPath = "`$tempBackup\`$relativePath"
-              `$destParent = Split-Path `$destPath -Parent
-              if (`$destParent -and -not (Test-Path `$destParent)) {
-                New-Item -ItemType Directory -Path `$destParent -Force | Out-Null
-              }
-              Copy-Item -Path `$dir -Destination `$destPath -Recurse -Force -ErrorAction SilentlyContinue
-              Write-Host "  Saved: `$relativePath"
+              `$name = Split-Path `$dir -Leaf
+              Copy-Item -Path `$dir -Destination "`$tempBackup\`$name" -Recurse -Force -ErrorAction SilentlyContinue
+              Write-Host "  Saved: `$name"
             }
           }
           
+          # === CREATE ZIP ===
           if (Test-Path "`$tempBackup\*") {
             `$tempZip = "`$persistDir\userdata-`$timestamp.zip"
             `$finalZip = "`$persistDir\userdata.zip"
             
             Compress-Archive -Path "`$tempBackup\*" -DestinationPath `$tempZip -Force
             
+            `$zipSize = (Get-Item `$tempZip).Length / 1MB
+            Write-Host "  Zip size: `$([math]::Round(`$zipSize, 2)) MB"
+            
             if (Test-Path `$finalZip) {
-              `$retries = 3
-              while (`$retries -gt 0) {
-                try {
-                  Remove-Item -Path `$finalZip -Force -ErrorAction Stop
-                  break
-                } catch {
-                  `$retries--
-                  Start-Sleep -Seconds 2
-                }
-              }
+              Remove-Item -Path `$finalZip -Force -ErrorAction SilentlyContinue
             }
             
             if (-not (Test-Path `$finalZip)) {
@@ -710,6 +849,7 @@ jobs:
           }
           
           Remove-Item -Path `$tempBackup -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "[`$(Get-Date -Format 'HH:mm:ss')] Save complete"
           "@
           
           $saveScriptPath = "$persistDir\auto-save.ps1"
@@ -780,14 +920,12 @@ jobs:
             $remaining = ($endTime - (Get-Date)).TotalMinutes
             Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session active - $([math]::Round($remaining)) min remaining"
             
-            # Check Tailscale
             $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
             if ($status.BackendState -ne "Running") {
               Write-Host "Tailscale disconnected, reconnecting..."
               & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAILSCALE_AUTHKEY }}"
             }
             
-            # Prevent idle
             Add-Type -AssemblyName System.Windows.Forms
             [System.Windows.Forms.Cursor]::Position = [System.Windows.Forms.Cursor]::Position
             
@@ -822,7 +960,6 @@ jobs:
                 Move-Item -Path $newest.FullName -Destination $finalZip -Force
               }
             }
-            # Cleanup old
             foreach ($zip in $zips | Select-Object -Skip 1) {
               if ($zip.Name -ne "userdata.zip") {
                 Remove-Item -Path $zip.FullName -Force -ErrorAction SilentlyContinue
