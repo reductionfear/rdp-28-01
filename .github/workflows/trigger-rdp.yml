@@ -36,13 +36,32 @@ jobs:
           
           echo "Triggering RDP session: $SESSION_ID"
           
-          # Use repository_dispatch instead of workflow_dispatch
-          curl -X POST \
+          # Use repository_dispatch with verbose output
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             https://api.github.com/repos/${{ github.repository }}/dispatches \
-            -d "{\"event_type\":\"chain-rdp\",\"client_payload\":{\"session_id\":\"$SESSION_ID\",\"chain_count\":0}}"
+            -d "{\"event_type\":\"chain-rdp\",\"client_payload\":{\"session_id\":\"$SESSION_ID\",\"chain_count\":0}}")
           
-          echo ""
-          echo "Session triggered! Check the Actions tab for the running workflow."
-          echo "Session ID: $SESSION_ID"
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          echo "HTTP Status: $HTTP_CODE"
+          if [ -n "$BODY" ]; then
+            echo "Response: $BODY"
+          fi
+          
+          if [ "$HTTP_CODE" = "204" ]; then
+            echo ""
+            echo "✅ Session triggered successfully!"
+            echo "Session ID: $SESSION_ID"
+            echo ""
+            echo "Check the Actions tab for 'Infinite RDP Session' workflow"
+          else
+            echo ""
+            echo "❌ Failed to trigger session"
+            echo "Make sure:"
+            echo "  1. GH_PAT secret has 'repo' scope"
+            echo "  2. rdp-session.yml has no syntax errors"
+            exit 1
+          fi
