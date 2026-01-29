@@ -565,7 +565,6 @@ jobs:
           $clawdbotDir = "$rdpUserHome\.clawdbot"
           $clawdWorkspace = "$rdpUserHome\clawd"
           
-          # Skip if already configured (restored from previous session)
           if (Test-Path "$clawdbotDir\moltbot.json") {
             Write-Host "Moltbot already configured (restored from previous session)"
             exit 0
@@ -573,63 +572,47 @@ jobs:
           
           Write-Host "Pre-configuring Moltbot..."
           
-          # Create directories
           New-Item -ItemType Directory -Path $clawdbotDir -Force | Out-Null
           New-Item -ItemType Directory -Path "$clawdbotDir\agents\main\agent" -Force | Out-Null
           New-Item -ItemType Directory -Path "$clawdbotDir\credentials" -Force | Out-Null
           New-Item -ItemType Directory -Path $clawdWorkspace -Force | Out-Null
           
-          # Create moltbot.json config
           $workspacePath = $clawdWorkspace -replace '\\', '/'
-          $config = @"
-{
-  "channels": {
-    "telegram": {
-      "enabled": true
-    }
-  },
-  "agents": {
-    "defaults": {
-      "workspace": "$workspacePath",
-      "model": "claude-sonnet",
-      "provider": "antigravity"
-    }
-  },
-  "auth": {
-    "order": {
-      "claude-sonnet": ["antigravity", "anthropic"],
-      "claude-opus": ["antigravity", "anthropic"],
-      "default": ["antigravity", "anthropic", "openai"]
-    }
-  }
-}
-"@
           
-          $config | Out-File -FilePath "$clawdbotDir\moltbot.json" -Encoding UTF8
+          $configJson = '{
+            "channels": {
+              "telegram": {
+                "enabled": true
+              }
+            },
+            "agents": {
+              "defaults": {
+                "workspace": "' + $workspacePath + '",
+                "model": "claude-sonnet",
+                "provider": "antigravity"
+              }
+            },
+            "auth": {
+              "order": {
+                "claude-sonnet": ["antigravity", "anthropic"],
+                "claude-opus": ["antigravity", "anthropic"],
+                "default": ["antigravity", "anthropic", "openai"]
+              }
+            }
+          }'
+          
+          $configJson | Out-File -FilePath "$clawdbotDir\moltbot.json" -Encoding UTF8
           Write-Host "Created moltbot.json"
           
-          # Set Telegram token via environment
           [Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "$env:TELEGRAM_BOT_TOKEN", "Machine")
           Write-Host "Set TELEGRAM_BOT_TOKEN environment variable"
           
-          # Create basic workspace files
-          $agentsMd = @"
-# Agents
-
-You are a helpful AI assistant running on a GitHub Actions RDP session.
-"@
-          $agentsMd | Out-File -FilePath "$clawdWorkspace\AGENTS.md" -Encoding UTF8
+          $agentsContent = "# Agents`n`nYou are a helpful AI assistant running on a GitHub Actions RDP session."
+          $agentsContent | Out-File -FilePath "$clawdWorkspace\AGENTS.md" -Encoding UTF8
           
-          # Create empty auth-profiles.json
-          $authProfiles = @"
-{
-  "profiles": {},
-  "version": 1
-}
-"@
-          $authProfiles | Out-File -FilePath "$clawdbotDir\agents\main\agent\auth-profiles.json" -Encoding UTF8
+          $authProfilesJson = '{"profiles": {}, "version": 1}'
+          $authProfilesJson | Out-File -FilePath "$clawdbotDir\agents\main\agent\auth-profiles.json" -Encoding UTF8
           
-          # Set ownership
           $null = cmd /c "icacls `"$clawdbotDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $null = cmd /c "icacls `"$clawdWorkspace`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
@@ -641,7 +624,6 @@ You are a helpful AI assistant running on a GitHub Actions RDP session.
           Write-Host "Telegram: Ready (token from secrets)"
           Write-Host "Antigravity: Will authenticate in next step"
           Write-Host "=============================================="
-
       - name: Authenticate Moltbot with Antigravity
         shell: pwsh
         run: |
