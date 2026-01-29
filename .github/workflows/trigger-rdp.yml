@@ -36,10 +36,13 @@ jobs:
           
           echo "Triggering RDP session: $SESSION_ID"
           
-          gh workflow run rdp-session.yml \
-            --repo ${{ github.repository }} \
-            -f session_id="$SESSION_ID" \
-            -f chain_count="0"
+          # Use repository_dispatch instead of workflow_dispatch
+          curl -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/dispatches \
+            -d "{\"event_type\":\"chain-rdp\",\"client_payload\":{\"session_id\":\"$SESSION_ID\",\"chain_count\":0}}"
           
+          echo ""
           echo "Session triggered! Check the Actions tab for the running workflow."
           echo "Session ID: $SESSION_ID"
