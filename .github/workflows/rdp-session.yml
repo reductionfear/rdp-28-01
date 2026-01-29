@@ -629,48 +629,6 @@ jobs:
           Write-Host "Then start the gateway:"
           Write-Host "  moltbot gateway"
           Write-Host "=============================================="
-      - name: Authenticate Moltbot with Antigravity
-        shell: pwsh
-        run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $authProfilesPath = "$rdpUserHome\.clawdbot\agents\main\agent\auth-profiles.json"
-          
-          # Set environment for moltbot
-          $env:CLAWDBOT_STATE_DIR = "$rdpUserHome\.clawdbot"
-          $env:CLAWDBOT_WORKSPACE = "$rdpUserHome\clawd"
-          $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
-          $env:PATH = "$rdpUserHome\.npm-global;$rdpUserHome\scoop\shims;$env:PATH"
-          
-          # Check if already authenticated
-          if (Test-Path $authProfilesPath) {
-            $authContent = Get-Content $authProfilesPath -Raw
-            if ($authContent -match "antigravity") {
-              Write-Host "Antigravity already authenticated (restored from previous session)"
-              exit 0
-            }
-          }
-          
-          Write-Host "=============================================="
-          Write-Host "Antigravity OAuth Login"
-          Write-Host "=============================================="
-          Write-Host ""
-          Write-Host "Starting interactive login..."
-          Write-Host "A browser window will open for authentication."
-          Write-Host ""
-          
-          # Run moltbot auth login
-          # This will open a browser for OAuth
-          moltbot models auth login --provider antigravity
-          
-          Write-Host ""
-          Write-Host "=============================================="
-          Write-Host "Antigravity authentication complete!"
-          Write-Host "=============================================="
-          
-          # Set ownership
-          $null = cmd /c "icacls `"$rdpUserHome\.clawdbot`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $global:LASTEXITCODE = 0
-
       - name: Display Connection Info
         id: connection
         shell: pwsh
