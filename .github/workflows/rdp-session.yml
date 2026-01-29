@@ -543,20 +543,19 @@ jobs:
             
             Write-Host "NPM packages restored"
           } else {
-            Write-Host "No npm packages list found, installing moltbot..."
-            npm install -g moltbot@latest
+            Write-Host "No npm packages list found, installing clawdbot..."
+            npm install -g clawdbot@latest
           }
           
-          # Ensure moltbot is installed
-          if (-not (Get-Command moltbot -ErrorAction SilentlyContinue)) {
-            Write-Host "Installing moltbot..."
-            npm install -g moltbot@latest
+          if (-not (Get-Command clawdbot -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing clawdbot..."
+            npm install -g clawdbot@latest
           }
           
           $null = cmd /c "icacls `"$rdpUserHome\.npm-global`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
 
-      - name: Configure Moltbot
+      - name: Configure Clawdbot
         shell: pwsh
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -565,12 +564,12 @@ jobs:
           $clawdbotDir = "$rdpUserHome\.clawdbot"
           $clawdWorkspace = "$rdpUserHome\clawd"
           
-          if (Test-Path "$clawdbotDir\moltbot.json") {
-            Write-Host "Moltbot already configured (restored from previous session)"
+          if (Test-Path "$clawdbotDir\clawdbot.json") {
+            Write-Host "Clawdbot already configured (restored from previous session)"
             exit 0
           }
           
-          Write-Host "Pre-configuring Moltbot..."
+          Write-Host "Pre-configuring Clawdbot..."
           
           New-Item -ItemType Directory -Path $clawdbotDir -Force | Out-Null
           New-Item -ItemType Directory -Path "$clawdbotDir\agents\main\agent" -Force | Out-Null
@@ -601,8 +600,8 @@ jobs:
             }
           }'
           
-          $configJson | Out-File -FilePath "$clawdbotDir\moltbot.json" -Encoding UTF8
-          Write-Host "Created moltbot.json"
+          $configJson | Out-File -FilePath "$clawdbotDir\clawdbot.json" -Encoding UTF8
+          Write-Host "Created clawdbot.json"
           
           [Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "$env:TELEGRAM_BOT_TOKEN", "Machine")
           Write-Host "Set TELEGRAM_BOT_TOKEN environment variable"
@@ -619,15 +618,15 @@ jobs:
           
           Write-Host ""
           Write-Host "=============================================="
-          Write-Host "Moltbot pre-configured!"
+          Write-Host "Clawdbot pre-configured!"
           Write-Host "=============================================="
           Write-Host "Telegram: Ready (token from secrets)"
           Write-Host ""
           Write-Host "AFTER CONNECTING VIA RDP, run:"
-          Write-Host "  moltbot models auth login --provider antigravity"
+          Write-Host "  clawdbot models auth login --provider antigravity"
           Write-Host ""
           Write-Host "Then start the gateway:"
-          Write-Host "  moltbot gateway"
+          Write-Host "  clawdbot gateway"
           Write-Host "=============================================="
       - name: Display Connection Info
         id: connection
