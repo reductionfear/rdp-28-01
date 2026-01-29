@@ -607,7 +607,7 @@ jobs:
           [Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "$env:TELEGRAM_BOT_TOKEN", "Machine")
           Write-Host "Set TELEGRAM_BOT_TOKEN environment variable"
           
-          $agentsContent = "# Agents`n`nYou are a helpful AI assistant running on a GitHub Actions RDP session."
+          $agentsContent = "You are a helpful AI assistant running on a GitHub Actions RDP session."
           $agentsContent | Out-File -FilePath "$clawdWorkspace\AGENTS.md" -Encoding UTF8
           
           $authProfilesJson = '{"profiles": {}, "version": 1}'
@@ -622,7 +622,12 @@ jobs:
           Write-Host "Moltbot pre-configured!"
           Write-Host "=============================================="
           Write-Host "Telegram: Ready (token from secrets)"
-          Write-Host "Antigravity: Will authenticate in next step"
+          Write-Host ""
+          Write-Host "AFTER CONNECTING VIA RDP, run:"
+          Write-Host "  moltbot models auth login --provider antigravity"
+          Write-Host ""
+          Write-Host "Then start the gateway:"
+          Write-Host "  moltbot gateway"
           Write-Host "=============================================="
       - name: Authenticate Moltbot with Antigravity
         shell: pwsh
