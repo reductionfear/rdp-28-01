@@ -876,7 +876,7 @@ jobs:
           
           # Trigger next workflow
           `$headers = @{
-            "Authorization" = "Bearer $env:GH_TOKEN"
+            "Authorization" = "Bearer ${{ secrets.GH_PAT }}"
             "Accept" = "application/vnd.github.v3+json"
           }
           
