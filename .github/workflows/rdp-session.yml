@@ -970,13 +970,17 @@ jobs:
         run: |
           $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
       
-          # Safety net: restart Clawdbot after 2 minutes
+          # Safety net: restart Clawdbot after 3 minutes
           Start-Job -ScriptBlock {
-            Start-Sleep -Seconds 120
+            Start-Sleep -Seconds 180
             $env:PM2_HOME = "C:\Users\rdpuser\.pm2"
             $env:PATH = "C:\Users\rdpuser\.npm-global;$env:PATH"
+            $wrapper = "C:\Users\rdpuser\clawd\start-gateway.js"
+            
             & "C:\Users\rdpuser\.npm-global\pm2.cmd" restart clawd 2>$null
-            Write-Host "[SAFETY NET] pm2 restart clawd triggered"
+            if ($LASTEXITCODE -ne 0) {
+              & "C:\Users\rdpuser\.npm-global\pm2.cmd" start $wrapper --name clawd 2>$null
+            }
           } | Out-Null
       
           Write-Host "RDP session is ready. Keeping alive until: $endTime"
