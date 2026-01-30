@@ -59,14 +59,32 @@ jobs:
           Write-Host "Chain iteration: $chainCount"
 
       # ========== DOWNLOAD PERSISTED DATA (but don't restore yet) ==========
-      - name: Download persisted data
-        if: ${{ github.event.inputs.chain_count != '0' || github.event_name == 'repository_dispatch' }}
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          workflow: rdp-session.yml
-          name: rdp-session-data-${{ steps.session.outputs.SESSION_ID }}
-          path: ${{ env.PERSIST_DIR }}
-          if_no_artifact_found: warn
+      - name: Download persisted data from release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          $persistDir = "${{ env.PERSIST_DIR }}"
+          New-Item -ItemType Directory -Path $persistDir -Force | Out-Null
+          
+          Write-Host "Downloading backup from GitHub Release..."
+          
+          try {
+            # Download the latest backup from the 'rdp-backup' release
+            gh release download rdp-backup --pattern "userdata.zip" --dir $persistDir --clobber 2>$null
+            
+            if (Test-Path "$persistDir\userdata.zip") {
+              Write-Host "Successfully downloaded backup from release"
+              
+              # Also download the userprofile.txt if it exists
+              gh release download rdp-backup --pattern "userprofile.txt" --dir $persistDir --clobber 2>$null
+              gh release download rdp-backup --pattern "rdpuser-home.txt" --dir $persistDir --clobber 2>$null
+            } else {
+              Write-Host "No backup found in release (first run)"
+            }
+          } catch {
+            Write-Host "No existing backup release found (first run or release doesn't exist)"
+          }
         continue-on-error: true
 
       # ========== TAILSCALE SETUP ==========
@@ -875,6 +893,15 @@ jobs:
             if (-not (Test-Path `$finalZip)) {
               Move-Item -Path `$tempZip -Destination `$finalZip -Force
             }
+
+            try {
+              $env:GH_TOKEN = "${{ secrets.GH_PAT }}"
+              gh release delete-asset rdp-backup userdata.zip --yes 2>$null
+              gh release upload rdp-backup "$persistDir\userdata.zip" --clobber
+              Write-Host "  Synced to GitHub Release"
+            } catch {
+              Write-Host "  Could not sync to release (will sync on exit)"
+            }
           }
           
           Remove-Item -Path `$tempBackup -Recurse -Force -ErrorAction SilentlyContinue
@@ -999,15 +1026,56 @@ jobs:
           Write-Host "Final save complete"
           Get-ChildItem -Path $persistDir | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
 
-      - name: Upload persisted data
+      - name: Upload persisted data to release
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rdp-session-data-${{ steps.session.outputs.SESSION_ID }}
-          path: |
-            ${{ env.PERSIST_DIR }}/userdata*.zip
-            ${{ env.PERSIST_DIR }}/userprofile.txt
-            ${{ env.PERSIST_DIR }}/rdpuser-home.txt
-          retention-days: 7
-          if-no-files-found: warn
-          overwrite: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          $persistDir = "${{ env.PERSIST_DIR }}"
+          $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
+          
+          Write-Host "Uploading backup to GitHub Release..."
+          
+          # Check if release exists, create if not
+          $releaseExists = gh release view rdp-backup 2>$null
+          if (-not $releaseExists) {
+            Write-Host "Creating rdp-backup release..."
+            gh release create rdp-backup --title "RDP Session Backup" --notes "Persistent storage for RDP session data. Last updated: $timestamp" --latest=false
+          }
+          
+          # Upload files (--clobber overwrites existing)
+          $filesToUpload = @()
+          
+          if (Test-Path "$persistDir\userdata.zip") {
+            $filesToUpload += "$persistDir\userdata.zip"
+          }
+          if (Test-Path "$persistDir\userprofile.txt") {
+            $filesToUpload += "$persistDir\userprofile.txt"
+          }
+          if (Test-Path "$persistDir\rdpuser-home.txt") {
+            $filesToUpload += "$persistDir\rdpuser-home.txt"
+          }
+          
+          if ($filesToUpload.Count -gt 0) {
+            Write-Host "Uploading $($filesToUpload.Count) files..."
+            
+            foreach ($file in $filesToUpload) {
+              $fileName = Split-Path $file -Leaf
+              Write-Host "  Uploading: $fileName"
+              
+              # Delete existing asset first (gh doesn't have --clobber for upload)
+              gh release delete-asset rdp-backup $fileName --yes 2>$null
+              
+              # Upload new version
+              gh release upload rdp-backup $file --clobber
+            }
+            
+            # Update release notes with timestamp
+            gh release edit rdp-backup --notes "Persistent storage for RDP session data.`n`nLast updated: $timestamp`nSession ID: ${{ steps.session.outputs.SESSION_ID }}`nChain count: ${{ steps.session.outputs.CHAIN_COUNT }}"
+            
+            Write-Host "Backup uploaded successfully!"
+          } else {
+            Write-Host "No files to upload"
+          }
+        continue-on-error: true
