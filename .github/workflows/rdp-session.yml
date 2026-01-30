@@ -969,25 +969,34 @@ jobs:
         shell: pwsh
         run: |
           $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
-          
-          Write-Host "Keeping session alive until: $endTime"
-          
+      
+          # Safety net: restart Clawdbot after 2 minutes
+          Start-Job -ScriptBlock {
+            Start-Sleep -Seconds 120
+            $env:PM2_HOME = "C:\Users\rdpuser\.pm2"
+            $env:PATH = "C:\Users\rdpuser\.npm-global;$env:PATH"
+            & "C:\Users\rdpuser\.npm-global\pm2.cmd" restart clawd 2>$null
+            Write-Host "[SAFETY NET] pm2 restart clawd triggered"
+          } | Out-Null
+      
+          Write-Host "RDP session is ready. Keeping alive until: $endTime"
+      
           while ((Get-Date) -lt $endTime) {
             $remaining = ($endTime - (Get-Date)).TotalMinutes
             Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session active - $([math]::Round($remaining)) min remaining"
-            
+      
             $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
             if ($status.BackendState -ne "Running") {
               Write-Host "Tailscale disconnected, reconnecting..."
               & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAILSCALE_AUTHKEY }}"
             }
-            
+      
             Add-Type -AssemblyName System.Windows.Forms
             [System.Windows.Forms.Cursor]::Position = [System.Windows.Forms.Cursor]::Position
-            
+      
             Start-Sleep -Seconds 300
           }
-          
+      
           Write-Host "Session timeout reached"
 
       # ========== SAVE DATA BEFORE EXIT ==========
