@@ -628,6 +628,54 @@ jobs:
           Write-Host "Then start the gateway:"
           Write-Host "  clawdbot gateway"
           Write-Host "=============================================="
+
+      - name: Start Clawdbot gateway
+        shell: pwsh
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          
+          $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
+          $env:PATH = "$rdpUserHome\.npm-global;$rdpUserHome\scoop\shims;$env:PATH"
+          
+          $startScript = "$rdpUserHome\clawd\start-clawd.ps1"
+          
+          if (Test-Path $startScript) {
+            Write-Host "Running Clawdbot startup script..."
+            & powershell.exe -ExecutionPolicy Bypass -File $startScript
+          } else {
+            Write-Host "No startup script found, starting gateway directly..."
+            
+            # Ensure pm2 is installed
+            if (-not (Test-Path "$rdpUserHome\.npm-global\pm2.cmd")) {
+              npm install -g pm2
+            }
+            
+            # Ensure clawdbot is installed
+            if (-not (Test-Path "$rdpUserHome\.npm-global\clawdbot.cmd")) {
+              npm install -g clawdbot@latest
+            }
+            
+            # Create wrapper and start
+            $wrapper = "$rdpUserHome\clawd\start-gateway.js"
+            if (-not (Test-Path $wrapper)) {
+              @"
+          const { spawn } = require('child_process');
+          const cmd = spawn('clawdbot.cmd', ['gateway'], {
+            cwd: process.cwd(),
+            stdio: 'inherit',
+            shell: true
+          });
+          cmd.on('exit', (code) => process.exit(code || 0));
+          "@ | Out-File -FilePath $wrapper -Encoding UTF8
+            }
+            
+            & "$rdpUserHome\.npm-global\pm2.cmd" delete all 2>$null
+            & "$rdpUserHome\.npm-global\pm2.cmd" start $wrapper --name clawd
+            & "$rdpUserHome\.npm-global\pm2.cmd" save
+          }
+          
+          Write-Host "Clawdbot gateway started with pm2"
+
       - name: Display Connection Info
         id: connection
         shell: pwsh
