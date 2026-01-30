@@ -822,6 +822,11 @@ jobs:
             New-Item -ItemType Directory -Path "`$tempBackup\.npm-global" -Force | Out-Null
             
             Get-ChildItem -Path "`$userHome\.npm-global" -File -ErrorAction SilentlyContinue | Copy-Item -Destination "`$tempBackup\.npm-global\" -Force
+
+            if (Test-Path "`$userHome\.npm-global\patched-files") {
+              Copy-Item -Path "`$userHome\.npm-global\patched-files" -Destination "`$tempBackup\.npm-global\patched-files" -Recurse -Force
+              Write-Host " Saved: npm-global\patched-files (Antigravity Patch)"
+            }
             
             `$npmList = npm list -g --depth=0 2>`$null | Out-String
             `$npmList | Out-File -FilePath "`$tempBackup\.npm-global\installed-packages.txt" -Encoding UTF8
