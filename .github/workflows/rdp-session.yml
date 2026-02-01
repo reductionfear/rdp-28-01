@@ -697,7 +697,7 @@ jobs:
             Write-Host "Running Clawdbot startup script..."
             & powershell.exe -ExecutionPolicy Bypass -File $startScript
           } else {
-            Write-Host "No startup script found, starting gateway directly..."
+            Write-Host "No startup script found, starting processes directly..."
             
             # Ensure pm2 is installed
             if (-not (Test-Path "$rdpUserHome\.npm-global\pm2.cmd")) {
@@ -707,11 +707,10 @@ jobs:
             # Ensure clawdbot is installed
             if (-not (Test-Path "$rdpUserHome\.npm-global\clawdbot.cmd")) {
               npm install -g clawdbot@latest
-              # Restore patched file after fresh install
               Restore-PatchedFiles
             }
             
-            # Create wrapper and start
+            # Create gateway wrapper
             $wrapper = "$rdpUserHome\clawd\start-gateway.js"
             if (-not (Test-Path $wrapper)) {
               @"
@@ -726,12 +725,30 @@ jobs:
           "@ | Out-File -FilePath $wrapper -Encoding UTF8
             }
             
+            # Stop old processes and start fresh
             & "$rdpUserHome\.npm-global\pm2.cmd" delete all 2>$null
+            
+            # === PROCESS 0: CLAWD ===
             & "$rdpUserHome\.npm-global\pm2.cmd" start $wrapper --name clawd
+            
+            # === PROCESS 1: WATCHDOG ===
+            $watchdogScript = "$rdpUserHome\clawd\survival-watchdog.js"
+            if (Test-Path $watchdogScript) {
+              & "$rdpUserHome\.npm-global\pm2.cmd" start $watchdogScript --name watchdog
+              Write-Host "Watchdog started as Process 1"
+            } else {
+              Write-Host "WARNING: survival-watchdog.js not found!"
+            }
+            
             & "$rdpUserHome\.npm-global\pm2.cmd" save
           }
           
-          Write-Host "Clawdbot gateway started with pm2"
+          Write-Host ""
+          Write-Host "PM2 Process Status:"
+          & "$rdpUserHome\.npm-global\pm2.cmd" status
+          Write-Host ""
+          Write-Host "Process 0: clawd (Gateway)"
+          Write-Host "Process 1: watchdog (Survival Script)"
 
       - name: Display Connection Info
         id: connection
