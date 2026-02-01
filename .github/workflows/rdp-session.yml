@@ -970,9 +970,9 @@ jobs:
         run: |
           $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
       
-          # Safety net: restart Clawdbot after 3 minutes
+          # Safety net: restart Clawdbot after 8 minutes
           Start-Job -ScriptBlock {
-            Start-Sleep -Seconds 180
+            Start-Sleep -Seconds 480
             $env:PM2_HOME = "C:\Users\rdpuser\.pm2"
             $env:PATH = "C:\Users\rdpuser\.npm-global;$env:PATH"
             $wrapper = "C:\Users\rdpuser\clawd\start-gateway.js"
