@@ -670,7 +670,85 @@ jobs:
           Write-Host "Then start the gateway:"
           Write-Host "  clawdbot gateway"
           Write-Host "=============================================="
-
+          
+      - name: Start Clawdbot gateway
+        shell: pwsh
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          
+          $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
+          $env:PM2_HOME = "$rdpUserHome\.pm2"
+          $env:PATH = "$rdpUserHome\.npm-global;$rdpUserHome\scoop\shims;$env:PATH"
+          
+          # Function to restore patched file
+          function Restore-PatchedFiles {
+            $patchedSrc = "$rdpUserHome\.npm-global\patched-files\google-gemini-cli.js"
+            $targetPath = "$rdpUserHome\.npm-global\node_modules\clawdbot\node_modules\@mariozechner\pi-ai\dist\providers\google-gemini-cli.js"
+            
+            if ((Test-Path $patchedSrc) -and (Test-Path (Split-Path $targetPath -Parent))) {
+              Copy-Item -Path $patchedSrc -Destination $targetPath -Force
+              Write-Host "  Restored patched Antigravity user-agent"
+            }
+          }
+          
+          $startScript = "$rdpUserHome\clawd\start-clawd.ps1"
+          
+          if (Test-Path $startScript) {
+            Write-Host "Running Clawdbot startup script..."
+            & powershell.exe -ExecutionPolicy Bypass -File $startScript
+          } else {
+            Write-Host "No startup script found, starting processes directly..."
+            
+            # Ensure pm2 is installed
+            if (-not (Test-Path "$rdpUserHome\.npm-global\pm2.cmd")) {
+              npm install -g pm2
+            }
+            
+            # Ensure clawdbot is installed
+            if (-not (Test-Path "$rdpUserHome\.npm-global\clawdbot.cmd")) {
+              npm install -g clawdbot@latest
+              Restore-PatchedFiles
+            }
+            
+            # Create gateway wrapper
+            $wrapper = "$rdpUserHome\clawd\start-gateway.js"
+            if (-not (Test-Path $wrapper)) {
+              @"
+          const { spawn } = require('child_process');
+          const cmd = spawn('clawdbot.cmd', ['gateway'], {
+            cwd: process.cwd(),
+            stdio: 'inherit',
+            shell: true,
+            env: { ...process.env, PM2_HOME: 'C:\\Users\\rdpuser\\.pm2' }
+          });
+          cmd.on('exit', (code) => process.exit(code || 0));
+          "@ | Out-File -FilePath $wrapper -Encoding UTF8
+            }
+            
+            # Stop old processes and start fresh
+            & "$rdpUserHome\.npm-global\pm2.cmd" delete all 2>$null
+            
+            # === PROCESS 0: CLAWD ===
+            & "$rdpUserHome\.npm-global\pm2.cmd" start $wrapper --name clawd
+            
+            # === PROCESS 1: WATCHDOG ===
+            $watchdogScript = "$rdpUserHome\clawd\survival-watchdog.js"
+            if (Test-Path $watchdogScript) {
+              & "$rdpUserHome\.npm-global\pm2.cmd" start $watchdogScript --name watchdog
+              Write-Host "Watchdog started as Process 1"
+            } else {
+              Write-Host "WARNING: survival-watchdog.js not found!"
+            }
+            
+            & "$rdpUserHome\.npm-global\pm2.cmd" save
+          }
+          
+          Write-Host ""
+          Write-Host "PM2 Process Status:"
+          & "$rdpUserHome\.npm-global\pm2.cmd" status
+          Write-Host ""
+          Write-Host "Process 0: clawd (Gateway)"
+          Write-Host "Process 1: watchdog (Survival Script)"
 
       - name: Display Connection Info
         id: connection
