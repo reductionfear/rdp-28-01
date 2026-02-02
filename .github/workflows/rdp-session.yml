@@ -58,35 +58,6 @@ jobs:
           Write-Host "Session ID: $sessionId"
           Write-Host "Chain iteration: $chainCount"
 
-      # ========== DOWNLOAD PERSISTED DATA (but don't restore yet) ==========
-      - name: Download persisted data from release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          $persistDir = "${{ env.PERSIST_DIR }}"
-          New-Item -ItemType Directory -Path $persistDir -Force | Out-Null
-          
-          Write-Host "Downloading backup from GitHub Release..."
-          
-          try {
-            # Download the latest backup from the 'rdp-backup' release
-            gh release download rdp-backup --pattern "userdata.zip" --dir $persistDir --clobber 2>$null
-            
-            if (Test-Path "$persistDir\userdata.zip") {
-              Write-Host "Successfully downloaded backup from release"
-              
-              # Also download the userprofile.txt if it exists
-              gh release download rdp-backup --pattern "userprofile.txt" --dir $persistDir --clobber 2>$null
-              gh release download rdp-backup --pattern "rdpuser-home.txt" --dir $persistDir --clobber 2>$null
-            } else {
-              Write-Host "No backup found in release (first run)"
-            }
-          } catch {
-            Write-Host "No existing backup release found (first run or release doesn't exist)"
-          }
-        continue-on-error: true
-
       # ========== TAILSCALE SETUP ==========
       - name: Install Tailscale
         shell: pwsh
@@ -204,11 +175,10 @@ jobs:
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\Desktop" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\Downloads" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\projects" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\.clawdbot" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\.openclaw" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\.npm-global" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\.local\bin" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\scoop" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\clawd" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\openclaw-workspace" -Force | Out-Null
           
           "`$env:USERPROFILE" | Out-File -FilePath "$persistDir\actual-userprofile.txt" -Encoding UTF8 -NoNewline
           "@
@@ -246,11 +216,10 @@ jobs:
             New-Item -ItemType Directory -Path "$rdpUserHome\Desktop" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\Downloads" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\.clawdbot" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\scoop" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\clawd" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\openclaw-workspace" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local\Temp" -Force | Out-Null
@@ -356,10 +325,10 @@ jobs:
           Write-Host "Patching paths to $rdpUserHome :"
           $pathsToReplace | ForEach-Object { Write-Host "  - $_" }
           
-          # Find all JSON files in .clawdbot to patch
+          # Find all JSON files in .openclaw to patch
           $configFiles = @()
-          if (Test-Path "$rdpUserHome\.clawdbot") {
-            Get-ChildItem -Path "$rdpUserHome\.clawdbot" -Filter "*.json" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+          if (Test-Path "$rdpUserHome\.openclaw") {
+            Get-ChildItem -Path "$rdpUserHome\.openclaw" -Filter "*.json" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
               $configFiles += $_.FullName
             }
           }
@@ -415,25 +384,22 @@ jobs:
           
           # Create directories
           New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.clawdbot" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\scoop" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\clawd" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\openclaw-workspace" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
           
           # Set machine-wide environment variables
-          [Environment]::SetEnvironmentVariable("CLAWDBOT_STATE_DIR", "$rdpUserHome\.clawdbot", "Machine")
-          [Environment]::SetEnvironmentVariable("CLAWDBOT_WORKSPACE", "$rdpUserHome\clawd", "Machine")
-          [Environment]::SetEnvironmentVariable("SCOOP", "$rdpUserHome\scoop", "Machine")
+          [Environment]::SetEnvironmentVariable("OPENCLAW_STATE_DIR", "$rdpUserHome\.openclaw", "Machine")
+          [Environment]::SetEnvironmentVariable("OPENCLAW_WORKSPACE", "$rdpUserHome\openclaw-workspace", "Machine")
           [Environment]::SetEnvironmentVariable("NPM_CONFIG_PREFIX", "$rdpUserHome\.npm-global", "Machine")
           
           # Update PATH
           $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
           $newPaths = @(
             "$rdpUserHome\.npm-global",
-            "$rdpUserHome\scoop\shims",
             "$rdpUserHome\.local\bin"
           )
           foreach ($p in $newPaths) {
@@ -447,9 +413,8 @@ jobs:
           $global:LASTEXITCODE = 0
           
           Write-Host "Environment configured:"
-          Write-Host "  CLAWDBOT_STATE_DIR = $rdpUserHome\.clawdbot"
-          Write-Host "  CLAWDBOT_WORKSPACE = $rdpUserHome\clawd"
-          Write-Host "  SCOOP = $rdpUserHome\scoop"
+          Write-Host "  OPENCLAW_STATE_DIR = $rdpUserHome\.openclaw"
+          Write-Host "  OPENCLAW_WORKSPACE = $rdpUserHome\openclaw-workspace"
           Write-Host "  NPM_CONFIG_PREFIX = $rdpUserHome\.npm-global"
 
       - name: Install Development Tools
@@ -485,58 +450,6 @@ jobs:
           Write-Host "NPM version: $(npm --version)"
           Write-Host "NPM prefix: $(npm config get prefix)"
 
-      - name: Install Scoop for rdpuser
-        shell: pwsh
-        run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $scoopDir = "$rdpUserHome\scoop"
-          
-          Write-Host "Installing Scoop to: $scoopDir"
-          
-          if (Test-Path "$scoopDir\shims\scoop.ps1") {
-            Write-Host "Scoop already installed (restored from previous session)"
-            $env:SCOOP = $scoopDir
-            $env:PATH = "$scoopDir\shims;$env:PATH"
-          } else {
-            Write-Host "Installing Scoop..."
-            $env:SCOOP = $scoopDir
-            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-            Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
-          }
-          
-          $null = cmd /c "icacls `"$scoopDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $global:LASTEXITCODE = 0
-          
-          Write-Host "Scoop ready!"
-
-      - name: Restore scoop apps from list
-        shell: pwsh
-        run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $scoopAppsFile = "$rdpUserHome\scoop\installed-apps.txt"
-          
-          $env:SCOOP = "$rdpUserHome\scoop"
-          $env:PATH = "$rdpUserHome\scoop\shims;$env:PATH"
-          
-          if (Test-Path $scoopAppsFile) {
-            Write-Host "Reinstalling scoop apps from previous session..."
-            
-            $content = Get-Content $scoopAppsFile -Raw
-            $apps = $content -split "`n" | Where-Object { $_ -match '^\s*(\S+)\s+[\d\.]' } | ForEach-Object {
-              if ($_ -match '^\s*(\S+)') { $matches[1] }
-            } | Where-Object { $_ -and $_ -ne "Name" }
-            
-            foreach ($app in $apps) {
-              Write-Host "  Installing: $app"
-              scoop install $app --no-cache 2>$null
-            }
-            
-            Write-Host "Scoop apps restored"
-          } else {
-            Write-Host "No scoop apps list found, installing defaults..."
-            scoop install git go ffmpeg yt-dlp --no-cache 2>$null
-          }
-
       - name: Restore npm global packages from list
         shell: pwsh
         run: |
@@ -561,64 +474,40 @@ jobs:
             
             Write-Host "NPM packages restored"
           } else {
-            Write-Host "No npm packages list found, installing clawdbot..."
-            npm install -g clawdbot@latest
+            Write-Host "No npm packages list found, installing openclaw..."
+            npm install -g openclaw@latest
           }
           
-          if (-not (Get-Command clawdbot -ErrorAction SilentlyContinue)) {
-            Write-Host "Installing clawdbot..."
-            npm install -g clawdbot@latest
+          if (-not (Get-Command openclaw -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing openclaw..."
+            npm install -g openclaw@latest
           }
           
           $null = cmd /c "icacls `"$rdpUserHome\.npm-global`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
 
-      - name: Restore patched Antigravity files
-        shell: pwsh
-        run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          
-          # Restore patched google-gemini-cli.js with working Antigravity user-agent
-          $patchedSrc = "$rdpUserHome\.npm-global\patched-files\google-gemini-cli.js"
-          $targetPath = "$rdpUserHome\.npm-global\node_modules\clawdbot\node_modules\@mariozechner\pi-ai\dist\providers\google-gemini-cli.js"
-          
-          if (Test-Path $patchedSrc) {
-            Write-Host "Restoring patched google-gemini-cli.js..."
-            
-            # Ensure target directory exists
-            $targetDir = Split-Path $targetPath -Parent
-            if (Test-Path $targetDir) {
-              Copy-Item -Path $patchedSrc -Destination $targetPath -Force
-              Write-Host "  Restored patched Antigravity user-agent file"
-            } else {
-              Write-Host "  Target directory doesn't exist (clawdbot needs install first)"
-            }
-          } else {
-            Write-Host "No patched files backup found (first session)"
-          }
-
-      - name: Configure Clawdbot
+      - name: Configure OpenClaw
         shell: pwsh
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $clawdbotDir = "$rdpUserHome\.clawdbot"
-          $clawdWorkspace = "$rdpUserHome\clawd"
+          $openclawDir = "$rdpUserHome\.openclaw"
+          $openclawWorkspace = "$rdpUserHome\openclaw-workspace"
           
-          if (Test-Path "$clawdbotDir\clawdbot.json") {
-            Write-Host "Clawdbot already configured (restored from previous session)"
+          if (Test-Path "$openclawDir\openclaw.json") {
+            Write-Host "OpenClaw already configured (restored from previous session)"
             exit 0
           }
           
-          Write-Host "Pre-configuring Clawdbot..."
+          Write-Host "Pre-configuring OpenClaw..."
           
-          New-Item -ItemType Directory -Path $clawdbotDir -Force | Out-Null
-          New-Item -ItemType Directory -Path "$clawdbotDir\agents\main\agent" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$clawdbotDir\credentials" -Force | Out-Null
-          New-Item -ItemType Directory -Path $clawdWorkspace -Force | Out-Null
+          New-Item -ItemType Directory -Path $openclawDir -Force | Out-Null
+          New-Item -ItemType Directory -Path "$openclawDir\agents\main\agent" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$openclawDir\credentials" -Force | Out-Null
+          New-Item -ItemType Directory -Path $openclawWorkspace -Force | Out-Null
           
-          $workspacePath = $clawdWorkspace -replace '\\', '/'
+          $workspacePath = $openclawWorkspace -replace '\\', '/'
           
           $configJson = '{
             "channels": {
@@ -642,48 +531,47 @@ jobs:
             }
           }'
           
-          $configJson | Out-File -FilePath "$clawdbotDir\clawdbot.json" -Encoding UTF8
-          Write-Host "Created clawdbot.json"
+          $configJson | Out-File -FilePath "$openclawDir\openclaw.json" -Encoding UTF8
+          Write-Host "Created openclaw.json"
           
           [Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "$env:TELEGRAM_BOT_TOKEN", "Machine")
           Write-Host "Set TELEGRAM_BOT_TOKEN environment variable"
           
           $agentsContent = "You are a helpful AI assistant running on a GitHub Actions RDP session."
-          $agentsContent | Out-File -FilePath "$clawdWorkspace\AGENTS.md" -Encoding UTF8
+          $agentsContent | Out-File -FilePath "$openclawWorkspace\AGENTS.md" -Encoding UTF8
           
           $authProfilesJson = '{"profiles": {}, "version": 1}'
-          $authProfilesJson | Out-File -FilePath "$clawdbotDir\agents\main\agent\auth-profiles.json" -Encoding UTF8
+          $authProfilesJson | Out-File -FilePath "$openclawDir\agents\main\agent\auth-profiles.json" -Encoding UTF8
           
-          $null = cmd /c "icacls `"$clawdbotDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $null = cmd /c "icacls `"$clawdWorkspace`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $null = cmd /c "icacls `"$openclawDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $null = cmd /c "icacls `"$openclawWorkspace`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
           Write-Host ""
           Write-Host "=============================================="
-          Write-Host "Clawdbot pre-configured!"
+          Write-Host "OpenClaw pre-configured!"
           Write-Host "=============================================="
           Write-Host "Telegram: Ready (token from secrets)"
           Write-Host ""
           Write-Host "AFTER CONNECTING VIA RDP, run:"
-          Write-Host "  clawdbot models auth login --provider antigravity"
+          Write-Host "  openclaw models auth login --provider antigravity"
           Write-Host ""
           Write-Host "Then start the gateway:"
-          Write-Host "  clawdbot gateway"
+          Write-Host "  openclaw gateway"
           Write-Host "=============================================="
           
-      - name: Start Clawdbot gateway
+      - name: Start OpenClaw gateway
         shell: pwsh
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           
           $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
           $env:PM2_HOME = "$rdpUserHome\.pm2"
-          $env:PATH = "$rdpUserHome\.npm-global;$rdpUserHome\scoop\shims;$env:PATH"
           
           # Function to restore patched file
           function Restore-PatchedFiles {
             $patchedSrc = "$rdpUserHome\.npm-global\patched-files\google-gemini-cli.js"
-            $targetPath = "$rdpUserHome\.npm-global\node_modules\clawdbot\node_modules\@mariozechner\pi-ai\dist\providers\google-gemini-cli.js"
+            $targetPath = "$rdpUserHome\.npm-global\node_modules\openclaw\node_modules\@mariozechner\pi-ai\dist\providers\google-gemini-cli.js"
             
             if ((Test-Path $patchedSrc) -and (Test-Path (Split-Path $targetPath -Parent))) {
               Copy-Item -Path $patchedSrc -Destination $targetPath -Force
@@ -691,10 +579,10 @@ jobs:
             }
           }
           
-          $startScript = "$rdpUserHome\clawd\start-clawd.ps1"
+          $startScript = "$rdpUserHome\openclaw-workspace\start-openclaw.ps1"
           
           if (Test-Path $startScript) {
-            Write-Host "Running Clawdbot startup script..."
+            Write-Host "Running OpenClaw startup script..."
             & powershell.exe -ExecutionPolicy Bypass -File $startScript
           } else {
             Write-Host "No startup script found, starting processes directly..."
@@ -704,18 +592,18 @@ jobs:
               npm install -g pm2
             }
             
-            # Ensure clawdbot is installed
-            if (-not (Test-Path "$rdpUserHome\.npm-global\clawdbot.cmd")) {
-              npm install -g clawdbot@latest
+            # Ensure openclaw is installed
+            if (-not (Test-Path "$rdpUserHome\.npm-global\openclaw.cmd")) {
+              npm install -g openclaw@latest
               Restore-PatchedFiles
             }
             
             # Create gateway wrapper
-            $wrapper = "$rdpUserHome\clawd\start-gateway.js"
+            $wrapper = "$rdpUserHome\openclaw-workspace\start-gateway.js"
             if (-not (Test-Path $wrapper)) {
               @"
           const { spawn } = require('child_process');
-          const cmd = spawn('clawdbot.cmd', ['gateway'], {
+          const cmd = spawn('openclaw.cmd', ['gateway'], {
             cwd: process.cwd(),
             stdio: 'inherit',
             shell: true,
@@ -728,11 +616,11 @@ jobs:
             # Stop old processes and start fresh
             & "$rdpUserHome\.npm-global\pm2.cmd" delete all 2>$null
             
-            # === PROCESS 0: CLAWD ===
-            & "$rdpUserHome\.npm-global\pm2.cmd" start $wrapper --name clawd
+            # === PROCESS 0: OPENCLAW ===
+            & "$rdpUserHome\.npm-global\pm2.cmd" start $wrapper --name openclaw
             
             # === PROCESS 1: WATCHDOG ===
-            $watchdogScript = "$rdpUserHome\clawd\survival-watchdog.js"
+            $watchdogScript = "$rdpUserHome\openclaw-workspace\survival-watchdog.js"
             if (Test-Path $watchdogScript) {
               & "$rdpUserHome\.npm-global\pm2.cmd" start $watchdogScript --name watchdog
               Write-Host "Watchdog started as Process 1"
@@ -747,7 +635,7 @@ jobs:
           Write-Host "PM2 Process Status:"
           & "$rdpUserHome\.npm-global\pm2.cmd" status
           Write-Host ""
-          Write-Host "Process 0: clawd (Gateway)"
+          Write-Host "Process 0: openclaw (Gateway)"
           Write-Host "Process 1: watchdog (Survival Script)"
 
       - name: Display Connection Info
@@ -777,17 +665,16 @@ jobs:
           Write-Host ""
           Write-Host "rdpuser profile path: $rdpUserHome"
           Write-Host ""
-          Write-Host "Moltbot:"
-          Write-Host "  Config: $rdpUserHome\.clawdbot\moltbot.json"
-          Write-Host "  Workspace: $rdpUserHome\clawd"
-          Write-Host "  Start: moltbot gateway"
+          Write-Host "OpenClaw:"
+          Write-Host "  Config: $rdpUserHome\.openclaw\openclaw.json"
+          Write-Host "  Workspace: $rdpUserHome\openclaw-workspace"
+          Write-Host "  Start: openclaw gateway"
           Write-Host ""
           Write-Host "Persistent directories:"
-          Write-Host "  $rdpUserHome\.clawdbot (config, oauth, sessions)"
-          Write-Host "  $rdpUserHome\clawd (workspace)"
+          Write-Host "  $rdpUserHome\.openclaw (config, oauth, sessions)"
+          Write-Host "  $rdpUserHome\openclaw-workspace (workspace)"
           Write-Host "  $rdpUserHome\projects"
           Write-Host "  $rdpUserHome\.npm-global"
-          Write-Host "  $rdpUserHome\scoop"
           Write-Host ""
           Write-Host "Session will auto-chain in ~${{ env.SESSION_TIMEOUT_MINUTES }} minutes"
           Write-Host "=============================================="
@@ -815,41 +702,18 @@ jobs:
           `$tempBackup = "`$env:TEMP\rdp-backup-`$timestamp"
           New-Item -ItemType Directory -Path `$tempBackup -Force | Out-Null
           
-          # === MOLTBOT/CLAWDBOT - FULL SAVE (critical auth + sessions) ===
-          if (Test-Path "`$userHome\.clawdbot") {
-            Write-Host "  Saving .clawdbot (moltbot config, oauth, sessions)..."
-            Copy-Item -Path "`$userHome\.clawdbot" -Destination "`$tempBackup\.clawdbot" -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "  Saved: .clawdbot (full)"
+          # === OPENCLAW - FULL SAVE (critical auth + sessions) ===
+          if (Test-Path "`$userHome\.openclaw") {
+            Write-Host "  Saving .openclaw (openclaw config, oauth, sessions)..."
+            Copy-Item -Path "`$userHome\.openclaw" -Destination "`$tempBackup\.openclaw" -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "  Saved: .openclaw (full)"
           }
           
-          # === MOLTBOT WORKSPACE (agent identity, memory) ===
-          if (Test-Path "`$userHome\clawd") {
-            Write-Host "  Saving clawd workspace (AGENTS.md, MEMORY.md, etc.)..."
-            Copy-Item -Path "`$userHome\clawd" -Destination "`$tempBackup\clawd" -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "  Saved: clawd (full)"
-          }
-          
-          # === SELECTIVE SCOOP SAVE ===
-          if (Test-Path "`$userHome\scoop") {
-            New-Item -ItemType Directory -Path "`$tempBackup\scoop" -Force | Out-Null
-            
-            if (Test-Path "`$userHome\scoop\shims") {
-              Copy-Item -Path "`$userHome\scoop\shims" -Destination "`$tempBackup\scoop\shims" -Recurse -Force
-              Write-Host "  Saved: scoop\shims"
-            }
-            
-            `$installedApps = scoop list 2>`$null | Out-String
-            `$installedApps | Out-File -FilePath "`$tempBackup\scoop\installed-apps.txt" -Encoding UTF8
-            Write-Host "  Saved: scoop installed apps list"
-            
-            if (Test-Path "`$userHome\scoop\config") {
-              Copy-Item -Path "`$userHome\scoop\config" -Destination "`$tempBackup\scoop\config" -Recurse -Force
-            }
-            
-            if (Test-Path "`$userHome\scoop\persist") {
-              Copy-Item -Path "`$userHome\scoop\persist" -Destination "`$tempBackup\scoop\persist" -Recurse -Force
-              Write-Host "  Saved: scoop\persist"
-            }
+          # === OPENCLAW WORKSPACE (agent identity, memory) ===
+          if (Test-Path "`$userHome\openclaw-workspace") {
+            Write-Host "  Saving openclaw-workspace (AGENTS.md, MEMORY.md, etc.)..."
+            Copy-Item -Path "`$userHome\openclaw-workspace" -Destination "`$tempBackup\openclaw-workspace" -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "  Saved: openclaw-workspace (full)"
           }
           
           # === SELECTIVE NPM-GLOBAL SAVE ===
@@ -987,125 +851,15 @@ jobs:
         run: |
           $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
       
-          # Safety net: restart Clawdbot after 8 minutes
+          # Safety net: restart OpenClaw after 8 minutes
           Start-Job -ScriptBlock {
             Start-Sleep -Seconds 480
             $env:PM2_HOME = "C:\Users\rdpuser\.pm2"
             $env:PATH = "C:\Users\rdpuser\.npm-global;$env:PATH"
-            $wrapper = "C:\Users\rdpuser\clawd\start-gateway.js"
+            $wrapper = "C:\Users\rdpuser\openclaw-workspace\start-gateway.js"
             
-            & "C:\Users\rdpuser\.npm-global\pm2.cmd" restart clawd 2>$null
+            & "C:\Users\rdpuser\.npm-global\pm2.cmd" restart openclaw 2>$null
             if ($LASTEXITCODE -ne 0) {
-              & "C:\Users\rdpuser\.npm-global\pm2.cmd" start $wrapper --name clawd 2>$null
+              & "C:\Users\rdpuser\.npm-global\pm2.cmd" start $wrapper --name openclaw 2>$null
             }
-          } | Out-Null
-      
-          Write-Host "RDP session is ready. Keeping alive until: $endTime"
-      
-          while ((Get-Date) -lt $endTime) {
-            $remaining = ($endTime - (Get-Date)).TotalMinutes
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session active - $([math]::Round($remaining)) min remaining"
-      
-            $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
-            if ($status.BackendState -ne "Running") {
-              Write-Host "Tailscale disconnected, reconnecting..."
-              & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAILSCALE_AUTHKEY }}"
-            }
-      
-            Add-Type -AssemblyName System.Windows.Forms
-            [System.Windows.Forms.Cursor]::Position = [System.Windows.Forms.Cursor]::Position
-      
-            Start-Sleep -Seconds 300
-          }
-      
-          Write-Host "Session timeout reached"
-
-      # ========== SAVE DATA BEFORE EXIT ==========
-      - name: Final save before exit
-        if: always()
-        shell: pwsh
-        run: |
-          $persistDir = "${{ env.PERSIST_DIR }}"
-          
-          Write-Host "Running final save..."
-          
-          if (Test-Path "$persistDir\auto-save.ps1") {
-            & powershell.exe -ExecutionPolicy Bypass -File "$persistDir\auto-save.ps1"
-          }
-          
-          # Consolidate zips
-          $zips = Get-ChildItem -Path $persistDir -Filter "userdata*.zip" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-          if ($zips.Count -gt 1) {
-            $newest = $zips[0]
-            if ($newest.Name -ne "userdata.zip") {
-              $finalZip = "$persistDir\userdata.zip"
-              if (Test-Path $finalZip) {
-                Remove-Item -Path $finalZip -Force -ErrorAction SilentlyContinue
-              }
-              if (-not (Test-Path $finalZip)) {
-                Move-Item -Path $newest.FullName -Destination $finalZip -Force
-              }
-            }
-            foreach ($zip in $zips | Select-Object -Skip 1) {
-              if ($zip.Name -ne "userdata.zip") {
-                Remove-Item -Path $zip.FullName -Force -ErrorAction SilentlyContinue
-              }
-            }
-          }
-          
-          Write-Host "Final save complete"
-          Get-ChildItem -Path $persistDir | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
-
-      - name: Upload persisted data to release
-        if: always()
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          $persistDir = "${{ env.PERSIST_DIR }}"
-          $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
-          
-          Write-Host "Uploading backup to GitHub Release..."
-          
-          # Check if release exists, create if not
-          $releaseExists = gh release view rdp-backup 2>$null
-          if (-not $releaseExists) {
-            Write-Host "Creating rdp-backup release..."
-            gh release create rdp-backup --title "RDP Session Backup" --notes "Persistent storage for RDP session data. Last updated: $timestamp" --latest=false
-          }
-          
-          # Upload files (--clobber overwrites existing)
-          $filesToUpload = @()
-          
-          if (Test-Path "$persistDir\userdata.zip") {
-            $filesToUpload += "$persistDir\userdata.zip"
-          }
-          if (Test-Path "$persistDir\userprofile.txt") {
-            $filesToUpload += "$persistDir\userprofile.txt"
-          }
-          if (Test-Path "$persistDir\rdpuser-home.txt") {
-            $filesToUpload += "$persistDir\rdpuser-home.txt"
-          }
-          
-          if ($filesToUpload.Count -gt 0) {
-            Write-Host "Uploading $($filesToUpload.Count) files..."
-            
-            foreach ($file in $filesToUpload) {
-              $fileName = Split-Path $file -Leaf
-              Write-Host "  Uploading: $fileName"
-              
-              # Delete existing asset first (gh doesn't have --clobber for upload)
-              gh release delete-asset rdp-backup $fileName --yes 2>$null
-              
-              # Upload new version
-              gh release upload rdp-backup $file --clobber
-            }
-            
-            # Update release notes with timestamp
-            gh release edit rdp-backup --notes "Persistent storage for RDP session data.`n`nLast updated: $timestamp`nSession ID: ${{ steps.session.outputs.SESSION_ID }}`nChain count: ${{ steps.session.outputs.CHAIN_COUNT }}"
-            
-            Write-Host "Backup uploaded successfully!"
-          } else {
-            Write-Host "No files to upload"
-          }
-        continue-on-error: true
+      [...]
