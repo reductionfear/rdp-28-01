@@ -986,7 +986,7 @@ jobs:
         shell: pwsh
         run: |
           $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
-      
+          
           # Safety net: restart OpenClaw after 8 minutes
           Start-Job -ScriptBlock {
             Start-Sleep -Seconds 480
@@ -998,15 +998,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               & "C:\Users\rdpuser\.npm-global\pm2.cmd" start $wrapper --name openclaw 2>$null
             }
-
-            Add-Type -AssemblyName System.Windows.Forms
-            [System.Windows.Forms.Cursor]::Position = [System.Windows.Forms.Cursor]::Position
-      
+          }
+          
+          # Keep alive loop - this was missing!
+          while ((Get-Date) -lt $endTime) {
+            Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss')..."
             Start-Sleep -Seconds 300
           }
-      
+          
           Write-Host "Session timeout reached"
-
+          
       # ========== SAVE DATA BEFORE EXIT ==========
       - name: Final save before exit
         if: always()
