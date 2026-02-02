@@ -789,7 +789,6 @@ jobs:
           Write-Host "[`$(Get-Date -Format 'HH:mm:ss')] Save complete"
           "@
           
-          $saveScriptPath = "$persistDir\auto-save.ps1"
           $saveScript | Out-File -FilePath $saveScriptPath -Encoding UTF8
           
           # Schedule auto-save every 30 minutes
@@ -810,12 +809,6 @@ jobs:
           $persistDir = "${{ env.PERSIST_DIR }}"
           
           Write-Host "Chain trigger scheduled in $chainMinutes minutes"
-          
-          $script = @"
-          Write-Host "Running final data save before chain..."
-          & powershell.exe -ExecutionPolicy Bypass -File "$persistDir\auto-save.ps1"
-          
-          Start-Sleep -Seconds 10
           
           `$headers = @{
             "Authorization" = "Bearer ${{ secrets.GH_PAT }}"
@@ -879,10 +872,6 @@ jobs:
           $persistDir = "${{ env.PERSIST_DIR }}"
           
           Write-Host "Running final save..."
-          
-          if (Test-Path "$persistDir\auto-save.ps1") {
-            & powershell.exe -ExecutionPolicy Bypass -File "$persistDir\auto-save.ps1"
-          }
           
           # Consolidate zips
           $zips = Get-ChildItem -Path $persistDir -Filter "userdata*.zip" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
