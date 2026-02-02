@@ -205,10 +205,10 @@ jobs:
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\Downloads" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\projects" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\.openclaw" -Force | Out-Null
+          New-Item -ItemType Directory -Path "`$env:USERPROFILE\.openclaw\workspace" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\.npm-global" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\.local\bin" -Force | Out-Null
           New-Item -ItemType Directory -Path "`$env:USERPROFILE\scoop" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\openclaw-workspace" -Force | Out-Null
           
           "`$env:USERPROFILE" | Out-File -FilePath "$persistDir\actual-userprofile.txt" -Encoding UTF8 -NoNewline
           "@
@@ -247,10 +247,10 @@ jobs:
             New-Item -ItemType Directory -Path "$rdpUserHome\Downloads" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw\workspace" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\scoop" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\openclaw-workspace" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
             New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local\Temp" -Force | Out-Null
@@ -416,16 +416,16 @@ jobs:
           # Create directories
           New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw\workspace" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\scoop" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\openclaw-workspace" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
           
           # Set machine-wide environment variables
           [Environment]::SetEnvironmentVariable("OPENCLAW_STATE_DIR", "$rdpUserHome\.openclaw", "Machine")
-          [Environment]::SetEnvironmentVariable("OPENCLAW_WORKSPACE", "$rdpUserHome\openclaw-workspace", "Machine")
+          [Environment]::SetEnvironmentVariable("OPENCLAW_WORKSPACE", "$rdpUserHome\.openclaw\workspace", "Machine")
           [Environment]::SetEnvironmentVariable("SCOOP", "$rdpUserHome\scoop", "Machine")
           [Environment]::SetEnvironmentVariable("NPM_CONFIG_PREFIX", "$rdpUserHome\.npm-global", "Machine")
           
@@ -448,7 +448,7 @@ jobs:
           
           Write-Host "Environment configured:"
           Write-Host "  OPENCLAW_STATE_DIR = $rdpUserHome\.openclaw"
-          Write-Host "  OPENCLAW_WORKSPACE = $rdpUserHome\openclaw-workspace"
+          Write-Host "  OPENCLAW_WORKSPACE = $rdpUserHome\.openclaw\workspace"
           Write-Host "  SCOOP = $rdpUserHome\scoop"
           Write-Host "  NPM_CONFIG_PREFIX = $rdpUserHome\.npm-global"
 
@@ -604,7 +604,7 @@ jobs:
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           $openclawDir = "$rdpUserHome\.openclaw"
-          $openclawWorkspace = "$rdpUserHome\openclaw-workspace"
+          $openclawWorkspace = "$rdpUserHome\.openclaw\workspace"
           
           if (Test-Path "$openclawDir\openclaw.json") {
             Write-Host "OpenClaw already configured (restored from previous session)"
@@ -691,7 +691,7 @@ jobs:
             }
           }
           
-          $startScript = "$rdpUserHome\openclaw-workspace\start-openclaw.ps1"
+          $startScript = "$rdpUserHome\.openclaw\workspace\start-openclaw.ps1"
           
           if (Test-Path $startScript) {
             Write-Host "Running OpenClaw startup script..."
@@ -711,7 +711,7 @@ jobs:
             }
             
             # Create gateway wrapper
-            $wrapper = "$rdpUserHome\openclaw-workspace\start-gateway.js"
+            $wrapper = "$rdpUserHome\.openclaw\workspace\start-gateway.js"
             if (-not (Test-Path $wrapper)) {
               @"
           const { spawn } = require('child_process');
@@ -732,7 +732,7 @@ jobs:
             & "$rdpUserHome\.npm-global\pm2.cmd" start $wrapper --name openclaw
             
             # === PROCESS 1: WATCHDOG ===
-            $watchdogScript = "$rdpUserHome\openclaw-workspace\survival-watchdog.js"
+            $watchdogScript = "$rdpUserHome\.openclaw\workspace\survival-watchdog.js"
             if (Test-Path $watchdogScript) {
               & "$rdpUserHome\.npm-global\pm2.cmd" start $watchdogScript --name watchdog
               Write-Host "Watchdog started as Process 1"
@@ -779,12 +779,12 @@ jobs:
           Write-Host ""
           Write-Host "OpenClaw:"
           Write-Host "  Config: $rdpUserHome\.openclaw\openclaw.json"
-          Write-Host "  Workspace: $rdpUserHome\openclaw-workspace"
+          Write-Host "  Workspace: $rdpUserHome\.openclaw\workspace"
           Write-Host "  Start: openclaw gateway"
           Write-Host ""
           Write-Host "Persistent directories:"
           Write-Host "  $rdpUserHome\.openclaw (config, oauth, sessions)"
-          Write-Host "  $rdpUserHome\openclaw-workspace (workspace)"
+          Write-Host "  $rdpUserHome\.openclaw\workspace (workspace)"
           Write-Host "  $rdpUserHome\projects"
           Write-Host "  $rdpUserHome\.npm-global"
           Write-Host "  $rdpUserHome\scoop"
@@ -823,10 +823,10 @@ jobs:
           }
           
           # === OPENCLAW WORKSPACE (agent identity, memory) ===
-          if (Test-Path "`$userHome\openclaw-workspace") {
-            Write-Host "  Saving openclaw-workspace (AGENTS.md, MEMORY.md, etc.)..."
-            Copy-Item -Path "`$userHome\openclaw-workspace" -Destination "`$tempBackup\openclaw-workspace" -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "  Saved: openclaw-workspace (full)"
+          if (Test-Path "`$userHome\.openclaw\workspace") {
+            Write-Host "  Saving workspace (AGENTS.md, MEMORY.md, etc.)..."
+            Copy-Item -Path "`$userHome\.openclaw\workspace" -Destination "`$tempBackup\.openclaw\workspace" -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "  Saved: workspace (full)"
           }
           
           # === SELECTIVE SCOOP SAVE ===
@@ -992,7 +992,7 @@ jobs:
             Start-Sleep -Seconds 480
             $env:PM2_HOME = "C:\Users\rdpuser\.pm2"
             $env:PATH = "C:\Users\rdpuser\.npm-global;$env:PATH"
-            $wrapper = "C:\Users\rdpuser\openclaw-workspace\start-gateway.js"
+            $wrapper = "C:\Users\rdpuser\.openclaw\workspace\start-gateway.js"
             
             & "C:\Users\rdpuser\.npm-global\pm2.cmd" restart openclaw 2>$null
             if ($LASTEXITCODE -ne 0) {
@@ -1093,4 +1093,3 @@ jobs:
             Write-Host "No files to upload"
           }
         continue-on-error: true
-
