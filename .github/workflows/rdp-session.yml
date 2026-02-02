@@ -372,7 +372,6 @@ jobs:
             if (Test-Path $file) {
               $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
               if ($content) {
-                $patched = $false
                 
                 foreach ($oldPath in $pathsToReplace) {
                   $oldBackslash = $oldPath
@@ -387,13 +386,7 @@ jobs:
                     $content = $content -replace [regex]::Escape($oldEscaped), $newEscaped
                     $content = $content -replace [regex]::Escape($oldBackslash), $newBackslash
                     $content = $content -replace [regex]::Escape($oldForward), $newForward
-                    $patched = $true
-                    Write-Host "  Patched: $file"
                   }
-                }
-                
-                if ($patched) {
-                  Set-Content -Path $file -Value $content -NoNewline
                 }
               }
             }
@@ -573,30 +566,6 @@ jobs:
           $null = cmd /c "icacls `"$rdpUserHome\.npm-global`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
 
-      - name: Restore patched Antigravity files
-        shell: pwsh
-        run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          
-          # Restore patched google-gemini-cli.js with working Antigravity user-agent
-          $patchedSrc = "$rdpUserHome\.npm-global\patched-files\google-gemini-cli.js"
-          $targetPath = "$rdpUserHome\.npm-global\node_modules\openclaw\node_modules\@mariozechner\pi-ai\dist\providers\google-gemini-cli.js"
-          
-          if (Test-Path $patchedSrc) {
-            Write-Host "Restoring patched google-gemini-cli.js..."
-            
-            # Ensure target directory exists
-            $targetDir = Split-Path $targetPath -Parent
-            if (Test-Path $targetDir) {
-              Copy-Item -Path $patchedSrc -Destination $targetPath -Force
-              Write-Host "  Restored patched Antigravity user-agent file"
-            } else {
-              Write-Host "  Target directory doesn't exist (openclaw needs install first)"
-            }
-          } else {
-            Write-Host "No patched files backup found (first session)"
-          }
-
       - name: Configure OpenClaw
         shell: pwsh
         env:
@@ -680,17 +649,6 @@ jobs:
           $env:PM2_HOME = "$rdpUserHome\.pm2"
           $env:PATH = "$rdpUserHome\.npm-global;$rdpUserHome\scoop\shims;$env:PATH"
           
-          # Function to restore patched file
-          function Restore-PatchedFiles {
-            $patchedSrc = "$rdpUserHome\.npm-global\patched-files\google-gemini-cli.js"
-            $targetPath = "$rdpUserHome\.npm-global\node_modules\openclaw\node_modules\@mariozechner\pi-ai\dist\providers\google-gemini-cli.js"
-            
-            if ((Test-Path $patchedSrc) -and (Test-Path (Split-Path $targetPath -Parent))) {
-              Copy-Item -Path $patchedSrc -Destination $targetPath -Force
-              Write-Host "  Restored patched Antigravity user-agent"
-            }
-          }
-          
           $startScript = "$rdpUserHome\.openclaw\workspace\start-openclaw.ps1"
           
           if (Test-Path $startScript) {
@@ -707,7 +665,6 @@ jobs:
             # Ensure openclaw is installed
             if (-not (Test-Path "$rdpUserHome\.npm-global\openclaw.cmd")) {
               npm install -g openclaw@latest
-              Restore-PatchedFiles
             }
             
             # Create gateway wrapper
@@ -857,11 +814,6 @@ jobs:
             New-Item -ItemType Directory -Path "`$tempBackup\.npm-global" -Force | Out-Null
             
             Get-ChildItem -Path "`$userHome\.npm-global" -File -ErrorAction SilentlyContinue | Copy-Item -Destination "`$tempBackup\.npm-global\" -Force
-
-            if (Test-Path "`$userHome\.npm-global\patched-files") {
-              Copy-Item -Path "`$userHome\.npm-global\patched-files" -Destination "`$tempBackup\.npm-global\patched-files" -Recurse -Force
-              Write-Host " Saved: npm-global\patched-files (Antigravity Patch)"
-            }
             
             `$npmList = npm list -g --depth=0 2>`$null | Out-String
             `$npmList | Out-File -FilePath "`$tempBackup\.npm-global\installed-packages.txt" -Encoding UTF8
