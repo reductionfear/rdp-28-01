@@ -679,45 +679,6 @@ jobs:
           Write-Host "Session will auto-chain in ~${{ env.SESSION_TIMEOUT_MINUTES }} minutes"
           Write-Host "=============================================="
 
-      - name: Schedule chain trigger
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          $chainMinutes = ${{ env.SESSION_TIMEOUT_MINUTES }} - ${{ env.CHAIN_BUFFER_MINUTES }}
-          $persistDir = "${{ env.PERSIST_DIR }}"
-          
-          Write-Host "Chain trigger scheduled in $chainMinutes minutes"
-          
-          `$headers = @{
-            "Authorization" = "Bearer ${{ secrets.GH_PAT }}"
-            "Accept" = "application/vnd.github.v3+json"
-          }
-          
-          `$body = @{
-            event_type = "chain-rdp"
-            client_payload = @{
-              session_id = "${{ steps.session.outputs.SESSION_ID }}"
-              chain_count = $([int]"${{ steps.session.outputs.CHAIN_COUNT }}" + 1)
-            }
-          } | ConvertTo-Json
-          
-          Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/dispatches" -Method Post -Headers `$headers -Body `$body -ContentType "application/json"
-          Write-Host "Next session triggered!"
-          "@
-          
-          $scriptPath = "$env:TEMP\chain-trigger.ps1"
-          $script | Out-File -FilePath $scriptPath -Encoding UTF8
-          
-          $triggerTime = (Get-Date).AddMinutes($chainMinutes)
-          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`""
-          $trigger = New-ScheduledTaskTrigger -Once -At $triggerTime
-          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-          
-          Register-ScheduledTask -TaskName "ChainRDP" -Action $action -Trigger $trigger -Settings $settings -Force
-          
-          Write-Host "Chain scheduled for: $triggerTime"
-
       - name: Keep session alive
         shell: pwsh
         run: |
