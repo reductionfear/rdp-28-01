@@ -118,6 +118,12 @@ jobs:
           
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
           
+          # Enable clipboard redirection
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableClip" -Value 0
+          
+          # Enable drive redirection (access local drives from RDP)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableCdm" -Value 0
+          
           Write-Host "RDP configured successfully"
 
       - name: Create RDP User
@@ -248,11 +254,20 @@ jobs:
           $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
           # Install packages with --ignore-dependencies to avoid resolution issues
-          choco install -y git.install vscode.install nodejs-lts python3 7zip --no-progress --ignore-dependencies
+          choco install -y git.install vscode.install nodejs-lts python3 7zip microsoft-windows-terminal notepadplusplus googlechrome firefox --no-progress --ignore-dependencies
           
-          $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          # Install uBlock Origin for Chrome via policy
+          $chromeExtPath = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
+          New-Item -Path $chromeExtPath -Force | Out-Null
+          # uBlock Origin extension ID
+          Set-ItemProperty -Path $chromeExtPath -Name "1" -Value "cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx"
           
-          Write-Host "Development tools installed"
+          # Install uBlock Origin for Firefox via policy
+          $firefoxExtPath = "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Extensions\Install"
+          New-Item -Path $firefoxExtPath -Force | Out-Null
+          Set-ItemProperty -Path $firefoxExtPath -Name "1" -Value "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+          
+          Write-Host "Development tools installed (with uBlock Origin for browsers)"
         continue-on-error: true
 
       - name: Configure NPM for rdpuser global installs
