@@ -350,8 +350,8 @@ jobs:
           # Stop old processes and start fresh
           & "$rdpUserHome\.npm-global\pm2.cmd" delete all 2>$null
           
-          # Start openclaw gateway directly via pm2
-          & "$rdpUserHome\.npm-global\pm2.cmd" start "$rdpUserHome\.npm-global\openclaw.cmd" --name openclaw -- gateway
+          # Start openclaw gateway directly via pm2 (from .openclaw directory)
+          & "$rdpUserHome\.npm-global\pm2.cmd" start "$rdpUserHome\.npm-global\openclaw.cmd" --name openclaw --cwd "$rdpUserHome\.openclaw" -- gateway
           
           & "$rdpUserHome\.npm-global\pm2.cmd" save
           
@@ -452,7 +452,7 @@ jobs:
             
             & "$userHome\.npm-global\pm2.cmd" restart openclaw 2>$null
             if ($LASTEXITCODE -ne 0) {
-              & "$userHome\.npm-global\pm2.cmd" start "$userHome\.npm-global\openclaw.cmd" --name openclaw -- gateway 2>$null
+              & "$userHome\.npm-global\pm2.cmd" start "$userHome\.npm-global\openclaw.cmd" --name openclaw --cwd "$userHome\.openclaw" -- gateway 2>$null
             }
           } -ArgumentList $rdpUserHome
           
