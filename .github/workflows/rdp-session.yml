@@ -344,34 +344,31 @@ jobs:
           
       - name: Start OpenClaw gateway
         shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          $password = $env:RDP_PASSWORD
           
-          $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
-          $env:PM2_HOME = "$rdpUserHome\.pm2"
-          $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+          Write-Host "Starting OpenClaw gateway as rdpuser..."
           
-          Write-Host "Starting OpenClaw gateway..."
+          # Create a script to run as rdpuser
+          $scriptContent = '$env:NPM_CONFIG_PREFIX = "' + $rdpUserHome + '\.npm-global"' + "`n"
+          $scriptContent += '$env:PATH = "' + $rdpUserHome + '\.npm-global;$env:PATH"' + "`n"
+          $scriptContent += 'Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "' + $rdpUserHome + '\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "' + $rdpUserHome + '\.openclaw"'
           
-          # Ensure pm2 is installed
-          if (-not (Test-Path "$rdpUserHome\.npm-global\pm2.cmd")) {
-            npm install -g pm2
-          }
+          $scriptPath = "$rdpUserHome\start-openclaw.ps1"
+          $scriptContent | Out-File -FilePath $scriptPath -Encoding UTF8
           
-          # Stop old processes and start fresh
-          & "$rdpUserHome\.npm-global\pm2.cmd" delete all 2>$null
+          # Run as rdpuser
+          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential("rdpuser", $securePassword)
           
-          # Start openclaw gateway via node directly
-          $openclawMjs = "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs"
-          & "$rdpUserHome\.npm-global\pm2.cmd" start $openclawMjs --name openclaw --cwd "$rdpUserHome\.openclaw" --interpreter node -- gateway
+          Start-Process -FilePath "powershell.exe" -ArgumentList "-ExecutionPolicy", "Bypass", "-File", $scriptPath -Credential $credential -WorkingDirectory $rdpUserHome
           
-          & "$rdpUserHome\.npm-global\pm2.cmd" save
+          Start-Sleep -Seconds 5
           
-          Write-Host ""
-          Write-Host "PM2 Process Status:"
-          & "$rdpUserHome\.npm-global\pm2.cmd" status
-          Write-Host ""
-          Write-Host "Process 0: openclaw (Gateway)"
+          Write-Host "OpenClaw gateway started as rdpuser (background process)"
 
       - name: Display Connection Info
         id: connection
@@ -455,17 +452,20 @@ jobs:
           $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
           $rdpUserHome = "C:\Users\rdpuser"
           
-          # Safety net: restart OpenClaw after 10 seconds
+          # Safety net: check if OpenClaw is running, restart if needed
           Start-Job -ScriptBlock {
             param($userHome)
             Start-Sleep -Seconds 10
-            $env:PM2_HOME = "$userHome\.pm2"
-            $env:PATH = "$userHome\.npm-global;$env:PATH"
             
-            & "$userHome\.npm-global\pm2.cmd" restart openclaw 2>$null
-            if ($LASTEXITCODE -ne 0) {
-              $openclawMjs = "$userHome\.npm-global\node_modules\openclaw\openclaw.mjs"
-              & "$userHome\.npm-global\pm2.cmd" start $openclawMjs --name openclaw --cwd "$userHome\.openclaw" --interpreter node -- gateway 2>$null
+            # Check if node process for openclaw is running
+            $openclawRunning = Get-Process -Name "node" -ErrorAction SilentlyContinue | Where-Object {
+              $_.CommandLine -like "*openclaw*"
+            }
+            
+            if (-not $openclawRunning) {
+              # Start openclaw directly
+              $env:PATH = "$userHome\.npm-global;$env:PATH"
+              Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "$userHome\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "$userHome\.openclaw"
             }
           } -ArgumentList $rdpUserHome
           
