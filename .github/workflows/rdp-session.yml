@@ -342,6 +342,40 @@ jobs:
           Write-Host "OpenClaw configured!"
           Write-Host "=============================================="
           
+      - name: Restore workspace from artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          $workspaceDir = "$rdpUserHome\.openclaw\workspace"
+          $repo = "${{ github.repository }}"
+          
+          Write-Host "Checking for previous workspace artifact..."
+          
+          # List artifacts and find the latest workspace artifact
+          $artifacts = gh api "repos/$repo/actions/artifacts" --jq '.artifacts[] | select(.name == "openclaw-workspace") | .id' 2>$null
+          
+          if ($artifacts) {
+            $latestArtifact = ($artifacts -split "`n")[0]
+            Write-Host "Found workspace artifact: $latestArtifact"
+            
+            # Download artifact
+            $zipPath = "$env:TEMP\workspace.zip"
+            gh api "repos/$repo/actions/artifacts/$latestArtifact/zip" > $zipPath
+            
+            # Extract to workspace directory
+            Expand-Archive -Path $zipPath -DestinationPath $workspaceDir -Force
+            Remove-Item $zipPath -Force
+            
+            Write-Host "Workspace restored from artifact"
+          } else {
+            Write-Host "No previous workspace artifact found, starting fresh"
+          }
+          
+          $null = cmd /c "icacls `"$workspaceDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
+          
       - name: Start OpenClaw gateway
         shell: pwsh
         run: |
@@ -543,3 +577,13 @@ jobs:
           
           Write-Host "Secrets updated with refreshed tokens!"
         continue-on-error: true
+
+      - name: Save workspace to artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-workspace
+          path: C:\Users\rdpuser\.openclaw\workspace
+          retention-days: 90
+          if-no-files-found: ignore
+          overwrite: true
