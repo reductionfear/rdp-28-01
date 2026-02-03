@@ -15,13 +15,13 @@ on:
     types: [chain-rdp]
 
 env:
-  SESSION_TIMEOUT_MINUTES: 330  # 5.5 hours (GitHub limit is 6h)
-  CHAIN_BUFFER_MINUTES: 15     # Start new session 15 min before timeout
+  SESSION_TIMEOUT_MINUTES: 355  # Close to 6 hour GitHub limit
+  CHAIN_BUFFER_MINUTES: 10     # Start new session 10 min before timeout (enough for setup)
 
 jobs:
   rdp-session:
     runs-on: windows-latest
-    timeout-minutes: 350
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
@@ -303,8 +303,13 @@ jobs:
           
           # Inject openclaw.json from secret
           if ($env:OPENCLAW_CONFIG) {
-            $env:OPENCLAW_CONFIG | Out-File -FilePath "$openclawDir\openclaw.json" -Encoding UTF8
-            Write-Host "Injected openclaw.json from secret"
+            # Fix paths: replace any user home path with rdpuser path
+            $config = $env:OPENCLAW_CONFIG
+            $config = $config -replace 'C:\\\\Users\\\\[^\\\"]+', ($rdpUserHome -replace '\\', '\\\\')
+            $config = $config -replace 'C:/Users/[^/\"]+', ($rdpUserHome -replace '\\', '/')
+            
+            $config | Out-File -FilePath "$openclawDir\openclaw.json" -Encoding UTF8
+            Write-Host "Injected openclaw.json from secret (paths fixed to $rdpUserHome)"
           } else {
             Write-Host "ERROR: No OPENCLAW_CONFIG secret found"
             exit 1
@@ -438,10 +443,10 @@ jobs:
           $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
           $rdpUserHome = "C:\Users\rdpuser"
           
-          # Safety net: restart OpenClaw after 8 minutes
+          # Safety net: restart OpenClaw after 10 seconds
           Start-Job -ScriptBlock {
             param($userHome)
-            Start-Sleep -Seconds 480
+            Start-Sleep -Seconds 10
             $env:PM2_HOME = "$userHome\.pm2"
             $env:PATH = "$userHome\.npm-global;$env:PATH"
             
