@@ -288,7 +288,7 @@ jobs:
       - name: Configure OpenClaw
         shell: pwsh
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          OPENCLAW_CONFIG: ${{ secrets.OPENCLAW_CONFIG }}
           OPENCLAW_AUTH_PROFILES: ${{ secrets.OPENCLAW_AUTH_PROFILES }}
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
@@ -301,49 +301,22 @@ jobs:
           New-Item -ItemType Directory -Path $openclawWorkspace -Force | Out-Null
           New-Item -ItemType Directory -Path "$openclawDir\agents\main\agent" -Force | Out-Null
           
-          # Create openclaw.json with pre-configured settings
-          $workspacePath = $openclawWorkspace -replace '\\', '/'
-          
-          $configJson = @"
-          {
-            "channels": {
-              "telegram": {
-                "enabled": true
-              }
-            },
-            "agents": {
-              "defaults": {
-                "workspace": "$workspacePath",
-                "model": "claude-sonnet",
-                "provider": "antigravity"
-              }
-            },
-            "auth": {
-              "order": {
-                "claude-sonnet": ["antigravity", "anthropic"],
-                "claude-opus": ["antigravity", "anthropic"],
-                "default": ["antigravity", "anthropic", "openai"]
-              }
-            }
+          # Inject openclaw.json from secret
+          if ($env:OPENCLAW_CONFIG) {
+            $env:OPENCLAW_CONFIG | Out-File -FilePath "$openclawDir\openclaw.json" -Encoding UTF8
+            Write-Host "Injected openclaw.json from secret"
+          } else {
+            Write-Host "ERROR: No OPENCLAW_CONFIG secret found"
+            exit 1
           }
-          "@
           
-          $configJson | Out-File -FilePath "$openclawDir\openclaw.json" -Encoding UTF8
-          Write-Host "Created openclaw.json"
-          
-          # Inject auth-profiles.json from secret if provided
+          # Inject auth-profiles.json from secret
           if ($env:OPENCLAW_AUTH_PROFILES) {
             $env:OPENCLAW_AUTH_PROFILES | Out-File -FilePath "$openclawDir\agents\main\agent\auth-profiles.json" -Encoding UTF8
             Write-Host "Injected auth-profiles.json from secret"
           } else {
-            Write-Host "WARNING: No OPENCLAW_AUTH_PROFILES secret found - manual auth required"
+            Write-Host "WARNING: No OPENCLAW_AUTH_PROFILES secret found"
           }
-          
-          [Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "$env:TELEGRAM_BOT_TOKEN", "Machine")
-          Write-Host "Set TELEGRAM_BOT_TOKEN environment variable"
-          
-          $agentsContent = "You are a helpful AI assistant running on a GitHub Actions RDP session."
-          $agentsContent | Out-File -FilePath "$openclawWorkspace\AGENTS.md" -Encoding UTF8
           
           $null = cmd /c "icacls `"$openclawDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
@@ -351,16 +324,6 @@ jobs:
           Write-Host ""
           Write-Host "=============================================="
           Write-Host "OpenClaw configured!"
-          Write-Host "=============================================="
-          Write-Host "Telegram: Ready (token from secrets)"
-          if ($env:OPENCLAW_AUTH_PROFILES) {
-            Write-Host "Auth profiles: Ready (from secrets)"
-          } else {
-            Write-Host "Auth profiles: Manual auth required"
-          }
-          Write-Host ""
-          Write-Host "Start the gateway:"
-          Write-Host "  openclaw gateway"
           Write-Host "=============================================="
           
       - name: Start OpenClaw gateway
@@ -495,3 +458,57 @@ jobs:
           }
           
           Write-Host "Session timeout reached"
+
+      - name: Save updated OpenClaw configs to secrets
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          $rdpUserHome = "C:\Users\rdpuser"
+          $openclawDir = "$rdpUserHome\.openclaw"
+          $repo = "${{ github.repository }}"
+          
+          Write-Host "Saving updated OpenClaw configs to GitHub secrets..."
+          
+          $configFile = "$openclawDir\openclaw.json"
+          $authFile = "$openclawDir\agents\main\agent\auth-profiles.json"
+          
+          if (-not (Test-Path $configFile)) {
+            Write-Host "No openclaw.json found, skipping"
+            exit 0
+          }
+          
+          # Get repo public key for encrypting secrets
+          $keyResponse = gh api "/repos/$repo/actions/secrets/public-key" | ConvertFrom-Json
+          $keyId = $keyResponse.key_id
+          $publicKey = $keyResponse.key
+          
+          # Function to encrypt secret using libsodium (via .NET)
+          function Encrypt-Secret {
+            param($plaintext, $publicKeyBase64)
+            
+            Add-Type -AssemblyName System.Security
+            
+            # Use gh secret set which handles encryption automatically
+            return $plaintext
+          }
+          
+          # Update OPENCLAW_CONFIG secret
+          if (Test-Path $configFile) {
+            Write-Host "Updating OPENCLAW_CONFIG secret..."
+            $configContent = Get-Content $configFile -Raw
+            $configContent | gh secret set OPENCLAW_CONFIG --repo $repo
+            Write-Host "Updated OPENCLAW_CONFIG"
+          }
+          
+          # Update OPENCLAW_AUTH_PROFILES secret
+          if (Test-Path $authFile) {
+            Write-Host "Updating OPENCLAW_AUTH_PROFILES secret..."
+            $authContent = Get-Content $authFile -Raw
+            $authContent | gh secret set OPENCLAW_AUTH_PROFILES --repo $repo
+            Write-Host "Updated OPENCLAW_AUTH_PROFILES"
+          }
+          
+          Write-Host "Secrets updated with refreshed tokens!"
+        continue-on-error: true
