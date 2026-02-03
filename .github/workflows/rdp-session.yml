@@ -17,7 +17,6 @@ on:
 env:
   SESSION_TIMEOUT_MINUTES: 330  # 5.5 hours (GitHub limit is 6h)
   CHAIN_BUFFER_MINUTES: 15     # Start new session 15 min before timeout
-  PERSIST_DIR: C:\rdp-persist  # Directory for persistent data
 
 jobs:
   rdp-session:
@@ -57,35 +56,6 @@ jobs:
           
           Write-Host "Session ID: $sessionId"
           Write-Host "Chain iteration: $chainCount"
-
-      # ========== DOWNLOAD PERSISTED DATA (but don't restore yet) ==========
-      - name: Download persisted data from release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          $persistDir = "${{ env.PERSIST_DIR }}"
-          New-Item -ItemType Directory -Path $persistDir -Force | Out-Null
-          
-          Write-Host "Downloading backup from GitHub Release..."
-          
-          try {
-            # Download the latest backup from the 'rdp-backup' release
-            gh release download rdp-backup --pattern "userdata.zip" --dir $persistDir --clobber 2>$null
-            
-            if (Test-Path "$persistDir\userdata.zip") {
-              Write-Host "Successfully downloaded backup from release"
-              
-              # Also download the userprofile.txt if it exists
-              gh release download rdp-backup --pattern "userprofile.txt" --dir $persistDir --clobber 2>$null
-              gh release download rdp-backup --pattern "rdpuser-home.txt" --dir $persistDir --clobber 2>$null
-            } else {
-              Write-Host "No backup found in release (first run)"
-            }
-          } catch {
-            Write-Host "No existing backup release found (first run or release doesn't exist)"
-          }
-        continue-on-error: true
 
       # ========== TAILSCALE SETUP ==========
       - name: Install Tailscale
@@ -183,221 +153,46 @@ jobs:
       - name: Initialize rdpuser profile
         id: rdpuser
         shell: pwsh
-        env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $username = "rdpuser"
-          $password = $env:RDP_PASSWORD
-          $persistDir = "${{ env.PERSIST_DIR }}"
           
           Write-Host "Initializing user profile for rdpuser..."
           
-          New-Item -ItemType Directory -Path $persistDir -Force | Out-Null
-          
-          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-          
-          $initScript = @"
-          Write-Host "Profile initialized for: `$env:USERNAME"
-          Write-Host "USERPROFILE: `$env:USERPROFILE"
-          
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\Documents" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\Desktop" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\Downloads" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\projects" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\.openclaw" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\.openclaw\workspace" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\.npm-global" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\.local\bin" -Force | Out-Null
-          New-Item -ItemType Directory -Path "`$env:USERPROFILE\scoop" -Force | Out-Null
-          
-          "`$env:USERPROFILE" | Out-File -FilePath "$persistDir\actual-userprofile.txt" -Encoding UTF8 -NoNewline
-          "@
-          
-          $initScriptPath = "$env:TEMP\init-profile.ps1"
-          $initScript | Out-File -FilePath $initScriptPath -Encoding UTF8
-          
-          try {
-            $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-            $processInfo.FileName = "powershell.exe"
-            $processInfo.Arguments = "-ExecutionPolicy Bypass -File `"$initScriptPath`""
-            $processInfo.UseShellExecute = $false
-            $processInfo.LoadUserProfile = $true
-            $processInfo.UserName = $username
-            $processInfo.Password = $securePassword
-            $processInfo.Domain = $env:COMPUTERNAME
-            $processInfo.RedirectStandardOutput = $true
-            $processInfo.RedirectStandardError = $true
-            
-            $process = [System.Diagnostics.Process]::Start($processInfo)
-            $output = $process.StandardOutput.ReadToEnd()
-            $errors = $process.StandardError.ReadToEnd()
-            $process.WaitForExit(60000)
-            
-            Write-Host "Profile init output: $output"
-            if ($errors) { Write-Host "Profile init errors: $errors" }
-            
-          } catch {
-            Write-Host "Could not run as rdpuser directly: $_"
-            Write-Host "Creating profile manually..."
-            
-            $rdpUserHome = "C:\Users\rdpuser"
-            New-Item -ItemType Directory -Path $rdpUserHome -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\Documents" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\Desktop" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\Downloads" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw\workspace" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\scoop" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
-            New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local\Temp" -Force | Out-Null
-            
-            $profileList = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
-            $userSid = (Get-LocalUser -Name $username).SID.Value
-            
-            if ($userSid) {
-              $profileKey = "$profileList\$userSid"
-              if (-not (Test-Path $profileKey)) {
-                New-Item -Path $profileKey -Force | Out-Null
-              }
-              Set-ItemProperty -Path $profileKey -Name "ProfileImagePath" -Value $rdpUserHome -Type ExpandString
-              Set-ItemProperty -Path $profileKey -Name "State" -Value 0 -Type DWord
-              Set-ItemProperty -Path $profileKey -Name "RefCount" -Value 0 -Type DWord
-            }
-            
-            $rdpUserHome | Out-File -FilePath "$persistDir\actual-userprofile.txt" -Encoding UTF8 -NoNewline
-          }
-          
           $rdpUserHome = "C:\Users\rdpuser"
-          if (Test-Path "$persistDir\actual-userprofile.txt") {
-            $actualProfile = (Get-Content "$persistDir\actual-userprofile.txt" -Raw).Trim()
-            if ($actualProfile -and (Test-Path $actualProfile)) {
-              $rdpUserHome = $actualProfile
-            }
-          }
+          New-Item -ItemType Directory -Path $rdpUserHome -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\Documents" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\Desktop" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\Downloads" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw\workspace" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local\Temp" -Force | Out-Null
           
-          try {
-            $userSid = (Get-LocalUser -Name $username -ErrorAction SilentlyContinue).SID.Value
-            if ($userSid) {
-              $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSid"
-              if (Test-Path $profileKey) {
-                $regProfile = (Get-ItemProperty -Path $profileKey -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath
-                if ($regProfile -and (Test-Path $regProfile)) {
-                  $rdpUserHome = $regProfile
-                }
-              }
+          $profileList = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
+          $userSid = (Get-LocalUser -Name $username).SID.Value
+          
+          if ($userSid) {
+            $profileKey = "$profileList\$userSid"
+            if (-not (Test-Path $profileKey)) {
+              New-Item -Path $profileKey -Force | Out-Null
             }
-          } catch { }
+            Set-ItemProperty -Path $profileKey -Name "ProfileImagePath" -Value $rdpUserHome -Type ExpandString
+            Set-ItemProperty -Path $profileKey -Name "State" -Value 0 -Type DWord
+            Set-ItemProperty -Path $profileKey -Name "RefCount" -Value 0 -Type DWord
+          }
           
           Write-Host "rdpuser USERPROFILE: $rdpUserHome"
           
           echo "RDPUSER_HOME=$rdpUserHome" >> $env:GITHUB_OUTPUT
-          $rdpUserHome | Out-File -FilePath "$persistDir\rdpuser-home.txt" -Encoding UTF8 -NoNewline
           
           $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
           Write-Host "Profile initialization complete: $rdpUserHome"
-
-      # ========== TRANSFER PERSISTED DATA (after we know USERPROFILE) ==========
-      - name: Transfer persisted data to rdpuser
-        shell: pwsh
-        run: |
-          $persistDir = "${{ env.PERSIST_DIR }}"
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          
-          Write-Host "Transferring persisted data to: $rdpUserHome"
-          
-          # Find zip to restore
-          $zipToRestore = $null
-          if (Test-Path "$persistDir\userdata.zip") {
-            $zipToRestore = "$persistDir\userdata.zip"
-          } else {
-            $zips = Get-ChildItem -Path $persistDir -Filter "userdata*.zip" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-            if ($zips.Count -gt 0) {
-              $zipToRestore = $zips[0].FullName
-              Write-Host "Using timestamped zip: $($zips[0].Name)"
-            }
-          }
-          
-          if (-not $zipToRestore -or -not (Test-Path $zipToRestore)) {
-            Write-Host "No persisted data found (first session or artifact expired)"
-            exit 0
-          }
-          
-          Write-Host "Restoring from: $zipToRestore"
-          
-          # Read old USERPROFILE path
-          $oldUserHome = ""
-          if (Test-Path "$persistDir\userprofile.txt") {
-            $oldUserHome = (Get-Content "$persistDir\userprofile.txt" -Raw).Trim()
-            Write-Host "Previous session USERPROFILE: $oldUserHome"
-          }
-          
-          # Extract to rdpuser profile
-          Expand-Archive -Path $zipToRestore -DestinationPath $rdpUserHome -Force
-          
-          Write-Host "Data extracted to $rdpUserHome"
-          
-          # Paths to replace
-          $pathsToReplace = @(
-            "C:\Users\runneradmin",
-            "C:\Users\runner",
-            "C:\Users\ContainerAdministrator"
-          )
-          
-          if ($oldUserHome -and ($oldUserHome -ne $rdpUserHome) -and ($pathsToReplace -notcontains $oldUserHome)) {
-            $pathsToReplace += $oldUserHome
-          }
-          
-          Write-Host "Patching paths to $rdpUserHome :"
-          $pathsToReplace | ForEach-Object { Write-Host "  - $_" }
-          
-          # Find all JSON files in .openclaw to patch
-          $configFiles = @()
-          if (Test-Path "$rdpUserHome\.openclaw") {
-            Get-ChildItem -Path "$rdpUserHome\.openclaw" -Filter "*.json" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-              $configFiles += $_.FullName
-            }
-          }
-          
-          # Add other config files
-          $configFiles += "$rdpUserHome\.npmrc"
-          $configFiles += "$rdpUserHome\.gitconfig"
-          
-          foreach ($file in $configFiles) {
-            if (Test-Path $file) {
-              $content = Get-Content $file -Raw -ErrorAction SilentlyContinue
-              if ($content) {
-                
-                foreach ($oldPath in $pathsToReplace) {
-                  $oldBackslash = $oldPath
-                  $oldForward = $oldPath -replace '\\', '/'
-                  $oldEscaped = $oldPath -replace '\\', '\\\\'
-                  
-                  $newBackslash = $rdpUserHome
-                  $newForward = $rdpUserHome -replace '\\', '/'
-                  $newEscaped = $rdpUserHome -replace '\\', '\\\\'
-                  
-                  if ($content.Contains($oldBackslash) -or $content.Contains($oldForward) -or $content.Contains($oldEscaped)) {
-                    $content = $content -replace [regex]::Escape($oldEscaped), $newEscaped
-                    $content = $content -replace [regex]::Escape($oldBackslash), $newBackslash
-                    $content = $content -replace [regex]::Escape($oldForward), $newForward
-                  }
-                }
-              }
-            }
-          }
-          
-          # Set ownership
-          $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $global:LASTEXITCODE = 0
-          
-          Write-Host "Restored contents:"
-          Get-ChildItem -Path $rdpUserHome -Force | ForEach-Object { Write-Host "  $_" }
 
       - name: Configure environment for rdpuser
         shell: pwsh
@@ -411,7 +206,6 @@ jobs:
           New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw\workspace" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\scoop" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
@@ -419,14 +213,12 @@ jobs:
           # Set machine-wide environment variables
           [Environment]::SetEnvironmentVariable("OPENCLAW_STATE_DIR", "$rdpUserHome\.openclaw", "Machine")
           [Environment]::SetEnvironmentVariable("OPENCLAW_WORKSPACE", "$rdpUserHome\.openclaw\workspace", "Machine")
-          [Environment]::SetEnvironmentVariable("SCOOP", "$rdpUserHome\scoop", "Machine")
           [Environment]::SetEnvironmentVariable("NPM_CONFIG_PREFIX", "$rdpUserHome\.npm-global", "Machine")
           
           # Update PATH
           $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
           $newPaths = @(
             "$rdpUserHome\.npm-global",
-            "$rdpUserHome\scoop\shims",
             "$rdpUserHome\.local\bin"
           )
           foreach ($p in $newPaths) {
@@ -442,7 +234,6 @@ jobs:
           Write-Host "Environment configured:"
           Write-Host "  OPENCLAW_STATE_DIR = $rdpUserHome\.openclaw"
           Write-Host "  OPENCLAW_WORKSPACE = $rdpUserHome\.openclaw\workspace"
-          Write-Host "  SCOOP = $rdpUserHome\scoop"
           Write-Host "  NPM_CONFIG_PREFIX = $rdpUserHome\.npm-global"
 
       - name: Install Development Tools
@@ -478,93 +269,21 @@ jobs:
           Write-Host "NPM version: $(npm --version)"
           Write-Host "NPM prefix: $(npm config get prefix)"
 
-      - name: Install Scoop for rdpuser
+      - name: Install OpenClaw
         shell: pwsh
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $scoopDir = "$rdpUserHome\scoop"
-          
-          Write-Host "Installing Scoop to: $scoopDir"
-          
-          if (Test-Path "$scoopDir\shims\scoop.ps1") {
-            Write-Host "Scoop already installed (restored from previous session)"
-            $env:SCOOP = $scoopDir
-            $env:PATH = "$scoopDir\shims;$env:PATH"
-          } else {
-            Write-Host "Installing Scoop..."
-            $env:SCOOP = $scoopDir
-            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-            Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
-          }
-          
-          $null = cmd /c "icacls `"$scoopDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $global:LASTEXITCODE = 0
-          
-          Write-Host "Scoop ready!"
-
-      - name: Restore scoop apps from list
-        shell: pwsh
-        run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $scoopAppsFile = "$rdpUserHome\scoop\installed-apps.txt"
-          
-          $env:SCOOP = "$rdpUserHome\scoop"
-          $env:PATH = "$rdpUserHome\scoop\shims;$env:PATH"
-          
-          if (Test-Path $scoopAppsFile) {
-            Write-Host "Reinstalling scoop apps from previous session..."
-            
-            $content = Get-Content $scoopAppsFile -Raw
-            $apps = $content -split "`n" | Where-Object { $_ -match '^\s*(\S+)\s+[\d\.]' } | ForEach-Object {
-              if ($_ -match '^\s*(\S+)') { $matches[1] }
-            } | Where-Object { $_ -and $_ -ne "Name" }
-            
-            foreach ($app in $apps) {
-              Write-Host "  Installing: $app"
-              scoop install $app --no-cache 2>$null
-            }
-            
-            Write-Host "Scoop apps restored"
-          } else {
-            Write-Host "No scoop apps list found, installing defaults..."
-            scoop install git go ffmpeg yt-dlp --no-cache 2>$null
-          }
-
-      - name: Restore npm global packages from list
-        shell: pwsh
-        run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $npmListFile = "$rdpUserHome\.npm-global\installed-packages.txt"
           
           $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
           $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
           
-          if (Test-Path $npmListFile) {
-            Write-Host "Reinstalling npm global packages from previous session..."
-            
-            $content = Get-Content $npmListFile -Raw
-            $packages = $content -split "`n" | Where-Object { $_ -match '[+`]--\s+(\S+)@' } | ForEach-Object {
-              if ($_ -match '[+`]--\s+(\S+)@') { $matches[1] }
-            } | Where-Object { $_ -and $_ -ne "npm" }
-            
-            foreach ($pkg in $packages) {
-              Write-Host "  Installing: $pkg"
-              npm install -g $pkg 2>$null
-            }
-            
-            Write-Host "NPM packages restored"
-          } else {
-            Write-Host "No npm packages list found, installing openclaw..."
-            npm install -g openclaw@latest
-          }
-          
-          if (-not (Get-Command openclaw -ErrorAction SilentlyContinue)) {
-            Write-Host "Installing openclaw..."
-            npm install -g openclaw@latest
-          }
+          Write-Host "Installing openclaw..."
+          npm install -g openclaw@latest
           
           $null = cmd /c "icacls `"$rdpUserHome\.npm-global`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
+          
+          Write-Host "OpenClaw installed"
 
       - name: Configure OpenClaw
         shell: pwsh
@@ -575,12 +294,7 @@ jobs:
           $openclawDir = "$rdpUserHome\.openclaw"
           $openclawWorkspace = "$rdpUserHome\.openclaw\workspace"
           
-          if (Test-Path "$openclawDir\openclaw.json") {
-            Write-Host "OpenClaw already configured (restored from previous session)"
-            exit 0
-          }
-          
-          Write-Host "Pre-configuring OpenClaw..."
+          Write-Host "Configuring OpenClaw..."
           
           New-Item -ItemType Directory -Path $openclawDir -Force | Out-Null
           New-Item -ItemType Directory -Path "$openclawDir\agents\main\agent" -Force | Out-Null
@@ -629,7 +343,7 @@ jobs:
           
           Write-Host ""
           Write-Host "=============================================="
-          Write-Host "OpenClaw pre-configured!"
+          Write-Host "OpenClaw configured!"
           Write-Host "=============================================="
           Write-Host "Telegram: Ready (token from secrets)"
           Write-Host ""
@@ -647,40 +361,20 @@ jobs:
           
           $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
           $env:PM2_HOME = "$rdpUserHome\.pm2"
-          $env:PATH = "$rdpUserHome\.npm-global;$rdpUserHome\scoop\shims;$env:PATH"
+          $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
           
-          Write-Host "Starting processes directly..."
+          Write-Host "Starting OpenClaw gateway..."
           
           # Ensure pm2 is installed
           if (-not (Test-Path "$rdpUserHome\.npm-global\pm2.cmd")) {
             npm install -g pm2
           }
           
-          # Ensure openclaw is installed
-          if (-not (Test-Path "$rdpUserHome\.npm-global\openclaw.cmd")) {
-            npm install -g openclaw@latest
-          }
-          
-          # Create gateway wrapper
-          $wrapper = "$rdpUserHome\.openclaw\workspace\start-gateway.js"
-          if (-not (Test-Path $wrapper)) {
-            @"
-          const { spawn } = require('child_process');
-          const cmd = spawn('openclaw.cmd', ['gateway'], {
-            cwd: process.cwd(),
-            stdio: 'inherit',
-            shell: true,
-            env: { ...process.env, PM2_HOME: 'C:\\Users\\rdpuser\\.pm2' }
-          });
-          cmd.on('exit', (code) => process.exit(code || 0));
-          "@ | Out-File -FilePath $wrapper -Encoding UTF8
-          }
-          
           # Stop old processes and start fresh
           & "$rdpUserHome\.npm-global\pm2.cmd" delete all 2>$null
           
-          # === PROCESS 0: OPENCLAW ===
-          & "$rdpUserHome\.npm-global\pm2.cmd" start $wrapper --name openclaw
+          # Start openclaw gateway directly via pm2
+          & "$rdpUserHome\.npm-global\pm2.cmd" start "$rdpUserHome\.npm-global\openclaw.cmd" --name openclaw -- gateway
           
           & "$rdpUserHome\.npm-global\pm2.cmd" save
           
@@ -722,175 +416,12 @@ jobs:
           Write-Host "  Workspace: $rdpUserHome\.openclaw\workspace"
           Write-Host "  Start: openclaw gateway"
           Write-Host ""
-          Write-Host "Persistent directories:"
-          Write-Host "  $rdpUserHome\.openclaw (config, oauth, sessions)"
-          Write-Host "  $rdpUserHome\.openclaw\workspace (workspace)"
+          Write-Host "User directories:"
           Write-Host "  $rdpUserHome\projects"
           Write-Host "  $rdpUserHome\.npm-global"
-          Write-Host "  $rdpUserHome\scoop"
           Write-Host ""
           Write-Host "Session will auto-chain in ~${{ env.SESSION_TIMEOUT_MINUTES }} minutes"
           Write-Host "=============================================="
-
-      # ========== AUTO-SAVE SCHEDULER ==========
-      - name: Setup auto-save scheduled task
-        shell: pwsh
-        run: |
-          $persistDir = "${{ env.PERSIST_DIR }}"
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          
-          Write-Host "Setting up auto-save for: $rdpUserHome"
-          
-          # Store rdpuser's USERPROFILE for next session
-          $rdpUserHome | Out-File -FilePath "$persistDir\userprofile.txt" -Encoding UTF8 -NoNewline
-          
-          # Create save script
-          $saveScript = @"
-          `$persistDir = "$persistDir"
-          `$userHome = "$rdpUserHome"
-          `$timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-          
-          Write-Host "[`$timestamp] Auto-saving rdpuser data from `$userHome..."
-          
-          `$tempBackup = "`$env:TEMP\rdp-backup-`$timestamp"
-          New-Item -ItemType Directory -Path `$tempBackup -Force | Out-Null
-          
-          # === OPENCLAW - SAVE CONFIG (excluding oauth/tokens) ===
-          if (Test-Path "`$userHome\.openclaw") {
-            Write-Host "  Saving .openclaw (config, sessions - excluding oauth/tokens)..."
-            New-Item -ItemType Directory -Path "`$tempBackup\.openclaw" -Force | Out-Null
-            
-            # Copy config files but exclude oauth/token related files
-            Get-ChildItem -Path "`$userHome\.openclaw" -File -ErrorAction SilentlyContinue | Where-Object {
-              `$_.Name -notmatch 'oauth|token|cookie|credentials'
-            } | Copy-Item -Destination "`$tempBackup\.openclaw\" -Force -ErrorAction SilentlyContinue
-            
-            # Copy subdirectories except credentials
-            Get-ChildItem -Path "`$userHome\.openclaw" -Directory -ErrorAction SilentlyContinue | Where-Object {
-              `$_.Name -notmatch 'credentials|oauth|tokens'
-            } | Copy-Item -Destination "`$tempBackup\.openclaw\" -Recurse -Force -ErrorAction SilentlyContinue
-            
-            Write-Host "  Saved: .openclaw (config only)"
-          }
-          
-          # === OPENCLAW WORKSPACE (agent identity, memory) ===
-          if (Test-Path "`$userHome\.openclaw\workspace") {
-            Write-Host "  Saving workspace (AGENTS.md, MEMORY.md, etc.)..."
-            New-Item -ItemType Directory -Path "`$tempBackup\.openclaw\workspace" -Force | Out-Null
-            
-            # Copy workspace files but exclude .ps1 scripts
-            Get-ChildItem -Path "`$userHome\.openclaw\workspace" -File -ErrorAction SilentlyContinue | Where-Object {
-              `$_.Extension -ne '.ps1'
-            } | Copy-Item -Destination "`$tempBackup\.openclaw\workspace\" -Force -ErrorAction SilentlyContinue
-            
-            # Copy subdirectories
-            Get-ChildItem -Path "`$userHome\.openclaw\workspace" -Directory -ErrorAction SilentlyContinue | Copy-Item -Destination "`$tempBackup\.openclaw\workspace\" -Recurse -Force -ErrorAction SilentlyContinue
-            
-            Write-Host "  Saved: workspace (excluding .ps1 scripts)"
-          }
-          
-          # === SELECTIVE SCOOP SAVE ===
-          if (Test-Path "`$userHome\scoop") {
-            New-Item -ItemType Directory -Path "`$tempBackup\scoop" -Force | Out-Null
-            
-            if (Test-Path "`$userHome\scoop\shims") {
-              Copy-Item -Path "`$userHome\scoop\shims" -Destination "`$tempBackup\scoop\shims" -Recurse -Force
-              Write-Host "  Saved: scoop\shims"
-            }
-            
-            `$installedApps = scoop list 2>`$null | Out-String
-            `$installedApps | Out-File -FilePath "`$tempBackup\scoop\installed-apps.txt" -Encoding UTF8
-            Write-Host "  Saved: scoop installed apps list"
-            
-            if (Test-Path "`$userHome\scoop\config") {
-              Copy-Item -Path "`$userHome\scoop\config" -Destination "`$tempBackup\scoop\config" -Recurse -Force
-            }
-            
-            if (Test-Path "`$userHome\scoop\persist") {
-              Copy-Item -Path "`$userHome\scoop\persist" -Destination "`$tempBackup\scoop\persist" -Recurse -Force
-              Write-Host "  Saved: scoop\persist"
-            }
-          }
-          
-          # === SELECTIVE NPM-GLOBAL SAVE ===
-          if (Test-Path "`$userHome\.npm-global") {
-            New-Item -ItemType Directory -Path "`$tempBackup\.npm-global" -Force | Out-Null
-            
-            Get-ChildItem -Path "`$userHome\.npm-global" -File -ErrorAction SilentlyContinue | Copy-Item -Destination "`$tempBackup\.npm-global\" -Force
-            
-            `$npmList = npm list -g --depth=0 2>`$null | Out-String
-            `$npmList | Out-File -FilePath "`$tempBackup\.npm-global\installed-packages.txt" -Encoding UTF8
-            Write-Host "  Saved: npm global packages list"
-            
-            if (Test-Path "`$userHome\.npm-global\package.json") {
-              Copy-Item -Path "`$userHome\.npm-global\package.json" -Destination "`$tempBackup\.npm-global\" -Force
-            }
-          }
-          
-          # === USER DATA (small, always save fully) ===
-          `$smallDirs = @(
-            "`$userHome\projects",
-            "`$userHome\Documents",
-            "`$userHome\Desktop",
-            "`$userHome\.ssh",
-            "`$userHome\.gitconfig",
-            "`$userHome\.local",
-            "`$userHome\.npmrc",
-            "`$userHome\.config",
-            "`$userHome\.vscode"
-          )
-          
-          foreach (`$dir in `$smallDirs) {
-            if (Test-Path `$dir) {
-              `$name = Split-Path `$dir -Leaf
-              Copy-Item -Path `$dir -Destination "`$tempBackup\`$name" -Recurse -Force -ErrorAction SilentlyContinue
-              Write-Host "  Saved: `$name"
-            }
-          }
-          
-          # === CREATE ZIP ===
-          if (Test-Path "`$tempBackup\*") {
-            `$tempZip = "`$persistDir\userdata-`$timestamp.zip"
-            `$finalZip = "`$persistDir\userdata.zip"
-            
-            Compress-Archive -Path "`$tempBackup\*" -DestinationPath `$tempZip -Force
-            
-            `$zipSize = (Get-Item `$tempZip).Length / 1MB
-            Write-Host "  Zip size: `$([math]::Round(`$zipSize, 2)) MB"
-            
-            if (Test-Path `$finalZip) {
-              Remove-Item -Path `$finalZip -Force -ErrorAction SilentlyContinue
-            }
-            
-            if (-not (Test-Path `$finalZip)) {
-              Move-Item -Path `$tempZip -Destination `$finalZip -Force
-            }
-
-            try {
-              $env:GH_TOKEN = "${{ secrets.GH_PAT }}"
-              gh release delete-asset rdp-backup userdata.zip --yes 2>$null
-              gh release upload rdp-backup "$persistDir\userdata.zip" --clobber
-              Write-Host "  Synced to GitHub Release"
-            } catch {
-              Write-Host "  Could not sync to release (will sync on exit)"
-            }
-          }
-          
-          Remove-Item -Path `$tempBackup -Recurse -Force -ErrorAction SilentlyContinue
-          Write-Host "[`$(Get-Date -Format 'HH:mm:ss')] Save complete"
-          "@
-          
-          $saveScriptPath = "$persistDir\auto-save.ps1"
-          $saveScript | Out-File -FilePath $saveScriptPath -Encoding UTF8
-          
-          # Schedule auto-save every 30 minutes
-          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$saveScriptPath`""
-          $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 30)
-          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-          
-          Register-ScheduledTask -TaskName "RDPAutoSave" -Action $action -Trigger $trigger -Settings $settings -Force
-          
-          Write-Host "Auto-save scheduled every 30 minutes"
 
       - name: Schedule chain trigger
         shell: pwsh
@@ -898,38 +429,30 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           $chainMinutes = ${{ env.SESSION_TIMEOUT_MINUTES }} - ${{ env.CHAIN_BUFFER_MINUTES }}
-          $persistDir = "${{ env.PERSIST_DIR }}"
+          $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
+          $nextChainCount = [int]"${{ steps.session.outputs.CHAIN_COUNT }}" + 1
+          $repo = "${{ github.repository }}"
+          $token = "${{ secrets.GH_PAT }}"
           
           Write-Host "Chain trigger scheduled in $chainMinutes minutes"
           
-          $script = @"
-          Write-Host "Running final data save before chain..."
-          & powershell.exe -ExecutionPolicy Bypass -File "$persistDir\auto-save.ps1"
-          
-          Start-Sleep -Seconds 10
-          
+          $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(@"
           `$headers = @{
-            "Authorization" = "Bearer ${{ secrets.GH_PAT }}"
-            "Accept" = "application/vnd.github.v3+json"
+            'Authorization' = 'Bearer $token'
+            'Accept' = 'application/vnd.github.v3+json'
           }
-          
           `$body = @{
-            event_type = "chain-rdp"
+            event_type = 'chain-rdp'
             client_payload = @{
-              session_id = "${{ steps.session.outputs.SESSION_ID }}"
-              chain_count = $([int]"${{ steps.session.outputs.CHAIN_COUNT }}" + 1)
+              session_id = '$sessionId'
+              chain_count = $nextChainCount
             }
           } | ConvertTo-Json
-          
-          Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/dispatches" -Method Post -Headers `$headers -Body `$body -ContentType "application/json"
-          Write-Host "Next session triggered!"
-          "@
-          
-          $scriptPath = "$env:TEMP\chain-trigger.ps1"
-          $script | Out-File -FilePath $scriptPath -Encoding UTF8
+          Invoke-RestMethod -Uri 'https://api.github.com/repos/$repo/dispatches' -Method Post -Headers `$headers -Body `$body -ContentType 'application/json'
+          "@))
           
           $triggerTime = (Get-Date).AddMinutes($chainMinutes)
-          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`""
+          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -EncodedCommand $encodedCommand"
           $trigger = New-ScheduledTaskTrigger -Once -At $triggerTime
           $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
           
@@ -941,110 +464,25 @@ jobs:
         shell: pwsh
         run: |
           $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
+          $rdpUserHome = "C:\Users\rdpuser"
           
           # Safety net: restart OpenClaw after 8 minutes
           Start-Job -ScriptBlock {
+            param($userHome)
             Start-Sleep -Seconds 480
-            $env:PM2_HOME = "C:\Users\rdpuser\.pm2"
-            $env:PATH = "C:\Users\rdpuser\.npm-global;$env:PATH"
-            $wrapper = "C:\Users\rdpuser\.openclaw\workspace\start-gateway.js"
+            $env:PM2_HOME = "$userHome\.pm2"
+            $env:PATH = "$userHome\.npm-global;$env:PATH"
             
-            & "C:\Users\rdpuser\.npm-global\pm2.cmd" restart openclaw 2>$null
+            & "$userHome\.npm-global\pm2.cmd" restart openclaw 2>$null
             if ($LASTEXITCODE -ne 0) {
-              & "C:\Users\rdpuser\.npm-global\pm2.cmd" start $wrapper --name openclaw 2>$null
+              & "$userHome\.npm-global\pm2.cmd" start "$userHome\.npm-global\openclaw.cmd" --name openclaw -- gateway 2>$null
             }
-          }
+          } -ArgumentList $rdpUserHome
           
-          # Keep alive loop - this was missing!
+          # Keep alive loop
           while ((Get-Date) -lt $endTime) {
             Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss')..."
             Start-Sleep -Seconds 300
           }
           
           Write-Host "Session timeout reached"
-          
-      # ========== SAVE DATA BEFORE EXIT ==========
-      - name: Final save before exit
-        if: always()
-        shell: pwsh
-        run: |
-          $persistDir = "${{ env.PERSIST_DIR }}"
-          
-          Write-Host "Running final save..."
-          
-          # Consolidate zips
-          $zips = Get-ChildItem -Path $persistDir -Filter "userdata*.zip" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-          if ($zips.Count -gt 1) {
-            $newest = $zips[0]
-            if ($newest.Name -ne "userdata.zip") {
-              $finalZip = "$persistDir\userdata.zip"
-              if (Test-Path $finalZip) {
-                Remove-Item -Path $finalZip -Force -ErrorAction SilentlyContinue
-              }
-              if (-not (Test-Path $finalZip)) {
-                Move-Item -Path $newest.FullName -Destination $finalZip -Force
-              }
-            }
-            foreach ($zip in $zips | Select-Object -Skip 1) {
-              if ($zip.Name -ne "userdata.zip") {
-                Remove-Item -Path $zip.FullName -Force -ErrorAction SilentlyContinue
-              }
-            }
-          }
-          
-          Write-Host "Final save complete"
-          Get-ChildItem -Path $persistDir | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
-
-      - name: Upload persisted data to release
-        if: always()
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          $persistDir = "${{ env.PERSIST_DIR }}"
-          $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
-          
-          Write-Host "Uploading backup to GitHub Release..."
-          
-          # Check if release exists, create if not
-          $releaseExists = gh release view rdp-backup 2>$null
-          if (-not $releaseExists) {
-            Write-Host "Creating rdp-backup release..."
-            gh release create rdp-backup --title "RDP Session Backup" --notes "Persistent storage for RDP session data. Last updated: $timestamp" --latest=false
-          }
-          
-          # Upload files (--clobber overwrites existing)
-          $filesToUpload = @()
-          
-          if (Test-Path "$persistDir\userdata.zip") {
-            $filesToUpload += "$persistDir\userdata.zip"
-          }
-          if (Test-Path "$persistDir\userprofile.txt") {
-            $filesToUpload += "$persistDir\userprofile.txt"
-          }
-          if (Test-Path "$persistDir\rdpuser-home.txt") {
-            $filesToUpload += "$persistDir\rdpuser-home.txt"
-          }
-          
-          if ($filesToUpload.Count -gt 0) {
-            Write-Host "Uploading $($filesToUpload.Count) files..."
-            
-            foreach ($file in $filesToUpload) {
-              $fileName = Split-Path $file -Leaf
-              Write-Host "  Uploading: $fileName"
-              
-              # Delete existing asset first (gh doesn't have --clobber for upload)
-              gh release delete-asset rdp-backup $fileName --yes 2>$null
-              
-              # Upload new version
-              gh release upload rdp-backup $file --clobber
-            }
-            
-            # Update release notes with timestamp
-            gh release edit rdp-backup --notes "Persistent storage for RDP session data.`n`nLast updated: $timestamp`nSession ID: ${{ steps.session.outputs.SESSION_ID }}`nChain count: ${{ steps.session.outputs.CHAIN_COUNT }}"
-            
-            Write-Host "Backup uploaded successfully!"
-          } else {
-            Write-Host "No files to upload"
-          }
-        continue-on-error: true
