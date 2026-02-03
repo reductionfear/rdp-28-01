@@ -384,20 +384,24 @@ jobs:
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           
-          Write-Host "Starting OpenClaw gateway..."
+          Write-Host "Setting up OpenClaw gateway auto-start..."
           
-          $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
-          Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "$rdpUserHome\.openclaw"
+          # Create startup script
+          $scriptContent = '$env:PATH = "C:\Users\rdpuser\.npm-global;" + $env:PATH' + "`r`n"
+          $scriptContent += 'Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "C:\Users\rdpuser\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "C:\Users\rdpuser\.openclaw"'
+          $scriptPath = "$rdpUserHome\start-openclaw.ps1"
+          $scriptContent | Out-File -FilePath $scriptPath -Encoding UTF8
           
-          Start-Sleep -Seconds 5
+          # Create batch wrapper for startup folder (runs when rdpuser logs in)
+          $batchContent = '@echo off' + "`r`n"
+          $batchContent += 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%USERPROFILE%\start-openclaw.ps1"'
+          $startupFolder = "$rdpUserHome\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+          New-Item -ItemType Directory -Path $startupFolder -Force | Out-Null
+          $batchPath = "$startupFolder\start-openclaw.bat"
+          $batchContent | Out-File -FilePath $batchPath -Encoding ASCII
           
-          # Verify it's running
-          $nodeProcs = Get-Process -Name "node" -ErrorAction SilentlyContinue
-          if ($nodeProcs) {
-            Write-Host "OpenClaw gateway is running (node processes: $($nodeProcs.Count))"
-          } else {
-            Write-Host "WARNING: No node processes found"
-          }
+          Write-Host "Startup script created: $batchPath"
+          Write-Host "OpenClaw will start automatically when rdpuser logs in via RDP"
 
       - name: Display Connection Info
         id: connection
@@ -481,26 +485,19 @@ jobs:
           $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
           $rdpUserHome = "C:\Users\rdpuser"
           
-          # Safety net: check if OpenClaw is running, restart if needed
-          Start-Job -ScriptBlock {
-            param($userHome)
-            Start-Sleep -Seconds 10
-            
-            # Check if node process for openclaw is running
-            $openclawRunning = Get-Process -Name "node" -ErrorAction SilentlyContinue | Where-Object {
-              $_.CommandLine -like "*openclaw*"
-            }
-            
-            if (-not $openclawRunning) {
-              # Start openclaw directly
-              $env:PATH = "$userHome\.npm-global;$env:PATH"
-              Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "$userHome\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "$userHome\.openclaw"
-            }
-          } -ArgumentList $rdpUserHome
-          
-          # Keep alive loop
+          # Keep alive loop - also checks and restarts OpenClaw every 5 minutes
           while ((Get-Date) -lt $endTime) {
             Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss')..."
+            
+            # Check if OpenClaw is running, restart if not
+            $nodeProcs = Get-Process -Name "node" -ErrorAction SilentlyContinue
+            if (-not $nodeProcs) {
+              Write-Host "OpenClaw not running, restarting..."
+              $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+              Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "$rdpUserHome\.openclaw"
+              Write-Host "OpenClaw restarted"
+            }
+            
             Start-Sleep -Seconds 300
           }
           
