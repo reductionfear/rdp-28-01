@@ -649,28 +649,22 @@ jobs:
           $env:PM2_HOME = "$rdpUserHome\.pm2"
           $env:PATH = "$rdpUserHome\.npm-global;$rdpUserHome\scoop\shims;$env:PATH"
           
-          $startScript = "$rdpUserHome\.openclaw\workspace\start-openclaw.ps1"
+          Write-Host "Starting processes directly..."
           
-          if (Test-Path $startScript) {
-            Write-Host "Running OpenClaw startup script..."
-            & powershell.exe -ExecutionPolicy Bypass -File $startScript
-          } else {
-            Write-Host "No startup script found, starting processes directly..."
-            
-            # Ensure pm2 is installed
-            if (-not (Test-Path "$rdpUserHome\.npm-global\pm2.cmd")) {
-              npm install -g pm2
-            }
-            
-            # Ensure openclaw is installed
-            if (-not (Test-Path "$rdpUserHome\.npm-global\openclaw.cmd")) {
-              npm install -g openclaw@latest
-            }
-            
-            # Create gateway wrapper
-            $wrapper = "$rdpUserHome\.openclaw\workspace\start-gateway.js"
-            if (-not (Test-Path $wrapper)) {
-              @"
+          # Ensure pm2 is installed
+          if (-not (Test-Path "$rdpUserHome\.npm-global\pm2.cmd")) {
+            npm install -g pm2
+          }
+          
+          # Ensure openclaw is installed
+          if (-not (Test-Path "$rdpUserHome\.npm-global\openclaw.cmd")) {
+            npm install -g openclaw@latest
+          }
+          
+          # Create gateway wrapper
+          $wrapper = "$rdpUserHome\.openclaw\workspace\start-gateway.js"
+          if (-not (Test-Path $wrapper)) {
+            @"
           const { spawn } = require('child_process');
           const cmd = spawn('openclaw.cmd', ['gateway'], {
             cwd: process.cwd(),
@@ -680,32 +674,21 @@ jobs:
           });
           cmd.on('exit', (code) => process.exit(code || 0));
           "@ | Out-File -FilePath $wrapper -Encoding UTF8
-            }
-            
-            # Stop old processes and start fresh
-            & "$rdpUserHome\.npm-global\pm2.cmd" delete all 2>$null
-            
-            # === PROCESS 0: OPENCLAW ===
-            & "$rdpUserHome\.npm-global\pm2.cmd" start $wrapper --name openclaw
-            
-            # === PROCESS 1: WATCHDOG ===
-            $watchdogScript = "$rdpUserHome\.openclaw\workspace\survival-watchdog.js"
-            if (Test-Path $watchdogScript) {
-              & "$rdpUserHome\.npm-global\pm2.cmd" start $watchdogScript --name watchdog
-              Write-Host "Watchdog started as Process 1"
-            } else {
-              Write-Host "WARNING: survival-watchdog.js not found!"
-            }
-            
-            & "$rdpUserHome\.npm-global\pm2.cmd" save
           }
+          
+          # Stop old processes and start fresh
+          & "$rdpUserHome\.npm-global\pm2.cmd" delete all 2>$null
+          
+          # === PROCESS 0: OPENCLAW ===
+          & "$rdpUserHome\.npm-global\pm2.cmd" start $wrapper --name openclaw
+          
+          & "$rdpUserHome\.npm-global\pm2.cmd" save
           
           Write-Host ""
           Write-Host "PM2 Process Status:"
           & "$rdpUserHome\.npm-global\pm2.cmd" status
           Write-Host ""
           Write-Host "Process 0: openclaw (Gateway)"
-          Write-Host "Process 1: watchdog (Survival Script)"
 
       - name: Display Connection Info
         id: connection
@@ -772,18 +755,38 @@ jobs:
           `$tempBackup = "`$env:TEMP\rdp-backup-`$timestamp"
           New-Item -ItemType Directory -Path `$tempBackup -Force | Out-Null
           
-          # === OPENCLAW - FULL SAVE (critical auth + sessions) ===
+          # === OPENCLAW - SAVE CONFIG (excluding oauth/tokens) ===
           if (Test-Path "`$userHome\.openclaw") {
-            Write-Host "  Saving .openclaw (openclaw config, oauth, sessions)..."
-            Copy-Item -Path "`$userHome\.openclaw" -Destination "`$tempBackup\.openclaw" -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "  Saved: .openclaw (full)"
+            Write-Host "  Saving .openclaw (config, sessions - excluding oauth/tokens)..."
+            New-Item -ItemType Directory -Path "`$tempBackup\.openclaw" -Force | Out-Null
+            
+            # Copy config files but exclude oauth/token related files
+            Get-ChildItem -Path "`$userHome\.openclaw" -File -ErrorAction SilentlyContinue | Where-Object {
+              `$_.Name -notmatch 'oauth|token|cookie|credentials'
+            } | Copy-Item -Destination "`$tempBackup\.openclaw\" -Force -ErrorAction SilentlyContinue
+            
+            # Copy subdirectories except credentials
+            Get-ChildItem -Path "`$userHome\.openclaw" -Directory -ErrorAction SilentlyContinue | Where-Object {
+              `$_.Name -notmatch 'credentials|oauth|tokens'
+            } | Copy-Item -Destination "`$tempBackup\.openclaw\" -Recurse -Force -ErrorAction SilentlyContinue
+            
+            Write-Host "  Saved: .openclaw (config only)"
           }
           
           # === OPENCLAW WORKSPACE (agent identity, memory) ===
           if (Test-Path "`$userHome\.openclaw\workspace") {
             Write-Host "  Saving workspace (AGENTS.md, MEMORY.md, etc.)..."
-            Copy-Item -Path "`$userHome\.openclaw\workspace" -Destination "`$tempBackup\.openclaw\workspace" -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "  Saved: workspace (full)"
+            New-Item -ItemType Directory -Path "`$tempBackup\.openclaw\workspace" -Force | Out-Null
+            
+            # Copy workspace files but exclude .ps1 scripts
+            Get-ChildItem -Path "`$userHome\.openclaw\workspace" -File -ErrorAction SilentlyContinue | Where-Object {
+              `$_.Extension -ne '.ps1'
+            } | Copy-Item -Destination "`$tempBackup\.openclaw\workspace\" -Force -ErrorAction SilentlyContinue
+            
+            # Copy subdirectories
+            Get-ChildItem -Path "`$userHome\.openclaw\workspace" -Directory -ErrorAction SilentlyContinue | Copy-Item -Destination "`$tempBackup\.openclaw\workspace\" -Recurse -Force -ErrorAction SilentlyContinue
+            
+            Write-Host "  Saved: workspace (excluding .ps1 scripts)"
           }
           
           # === SELECTIVE SCOOP SAVE ===
