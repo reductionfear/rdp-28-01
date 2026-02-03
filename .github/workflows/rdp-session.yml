@@ -248,7 +248,10 @@ jobs:
           $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
           # Install packages with --ignore-dependencies to avoid resolution issues
-          choco install -y git.install vscode.install nodejs-lts python3 7zip microsoft-windows-terminal notepadplusplus googlechrome firefox --no-progress --ignore-dependencies
+          choco install -y git.install vscode.install nodejs-lts python3 7zip microsoft-windows-terminal notepadplusplus firefox --no-progress --ignore-dependencies
+          
+          # Install Chrome separately with --ignore-checksums (Google updates faster than Chocolatey)
+          choco install -y googlechrome --ignore-checksums --no-progress
           
           # Install uBlock Origin for Chrome via policy
           $chromeExtPath = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
