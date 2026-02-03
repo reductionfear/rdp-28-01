@@ -381,41 +381,20 @@ jobs:
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           
-          Write-Host "Setting up OpenClaw gateway scheduled task..."
+          Write-Host "Starting OpenClaw gateway..."
           
-          # Create the startup script
-          $scriptContent = '$env:NPM_CONFIG_PREFIX = "C:\Users\rdpuser\.npm-global"' + "`r`n"
-          $scriptContent += '$env:PATH = "C:\Users\rdpuser\.npm-global;" + $env:PATH' + "`r`n"
-          $scriptContent += 'Set-Location "C:\Users\rdpuser\.openclaw"' + "`r`n"
-          $scriptContent += '& node "C:\Users\rdpuser\.npm-global\node_modules\openclaw\openclaw.mjs" gateway'
-          
-          $scriptPath = "$rdpUserHome\start-openclaw.ps1"
-          $scriptContent | Out-File -FilePath $scriptPath -Encoding UTF8
-          
-          # Create scheduled task action
-          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`"" -WorkingDirectory "$rdpUserHome\.openclaw"
-          
-          # Triggers: at startup AND at user login
-          $triggerStartup = New-ScheduledTaskTrigger -AtStartup
-          $triggerLogon = New-ScheduledTaskTrigger -AtLogOn -User "rdpuser"
-          
-          # Run as rdpuser with highest privileges
-          $principal = New-ScheduledTaskPrincipal -UserId "rdpuser" -LogonType S4U -RunLevel Highest
-          
-          # Settings: restart on failure, don't stop on idle
-          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-          
-          # Register the task
-          Register-ScheduledTask -TaskName "OpenClawGateway" -Action $action -Trigger $triggerStartup,$triggerLogon -Principal $principal -Settings $settings -Force
-          
-          Write-Host "Scheduled task 'OpenClawGateway' created"
-          
-          # Start it now
-          Start-ScheduledTask -TaskName "OpenClawGateway"
+          $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+          Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "$rdpUserHome\.openclaw"
           
           Start-Sleep -Seconds 5
           
-          Write-Host "OpenClaw gateway started via scheduled task"
+          # Verify it's running
+          $nodeProcs = Get-Process -Name "node" -ErrorAction SilentlyContinue
+          if ($nodeProcs) {
+            Write-Host "OpenClaw gateway is running (node processes: $($nodeProcs.Count))"
+          } else {
+            Write-Host "WARNING: No node processes found"
+          }
 
       - name: Display Connection Info
         id: connection
