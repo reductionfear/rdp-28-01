@@ -247,11 +247,13 @@ jobs:
           
           $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
-          choco install -y git vscode nodejs-lts python3 7zip --no-progress
+          # Install packages with --ignore-dependencies to avoid resolution issues
+          choco install -y git.install vscode.install nodejs-lts python3 7zip --no-progress --ignore-dependencies
           
           $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
           Write-Host "Development tools installed"
+        continue-on-error: true
 
       - name: Configure NPM for rdpuser global installs
         shell: pwsh
