@@ -159,37 +159,31 @@ jobs:
       - name: Initialize rdpuser profile
         id: rdpuser
         shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $username = "rdpuser"
+          $password = $env:RDP_PASSWORD
           
           Write-Host "Initializing user profile for rdpuser..."
           
+          # Trigger proper Windows profile creation by running a process as the user
+          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
+          
+          # Start a process as rdpuser to force Windows to create the profile properly
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "echo Profile initialized" -Credential $credential -Wait -NoNewWindow -ErrorAction SilentlyContinue
+          
+          Start-Sleep -Seconds 5
+          
           $rdpUserHome = "C:\Users\rdpuser"
-          New-Item -ItemType Directory -Path $rdpUserHome -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\Documents" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\Desktop" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\Downloads" -Force | Out-Null
+          
+          # Create additional directories
           New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw\workspace" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
           New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local\Temp" -Force | Out-Null
-          
-          $profileList = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
-          $userSid = (Get-LocalUser -Name $username).SID.Value
-          
-          if ($userSid) {
-            $profileKey = "$profileList\$userSid"
-            if (-not (Test-Path $profileKey)) {
-              New-Item -Path $profileKey -Force | Out-Null
-            }
-            Set-ItemProperty -Path $profileKey -Name "ProfileImagePath" -Value $rdpUserHome -Type ExpandString
-            Set-ItemProperty -Path $profileKey -Name "State" -Value 0 -Type DWord
-            Set-ItemProperty -Path $profileKey -Name "RefCount" -Value 0 -Type DWord
-          }
           
           Write-Host "rdpuser USERPROFILE: $rdpUserHome"
           
