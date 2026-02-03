@@ -381,8 +381,11 @@ jobs:
           
       - name: Start OpenClaw gateway
         shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          $password = $env:RDP_PASSWORD
           
           Write-Host "Setting up OpenClaw gateway auto-start..."
           
@@ -392,16 +395,24 @@ jobs:
           $scriptPath = "$rdpUserHome\start-openclaw.ps1"
           $scriptContent | Out-File -FilePath $scriptPath -Encoding UTF8
           
-          # Create batch wrapper for startup folder (runs when rdpuser logs in)
+          # Create batch wrapper
           $batchContent = '@echo off' + "`r`n"
-          $batchContent += 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%USERPROFILE%\start-openclaw.ps1"'
-          $startupFolder = "$rdpUserHome\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
-          New-Item -ItemType Directory -Path $startupFolder -Force | Out-Null
-          $batchPath = "$startupFolder\start-openclaw.bat"
+          $batchContent += 'powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Users\rdpuser\start-openclaw.ps1"'
+          $batchPath = "$rdpUserHome\start-openclaw.bat"
           $batchContent | Out-File -FilePath $batchPath -Encoding ASCII
           
-          Write-Host "Startup script created: $batchPath"
-          Write-Host "OpenClaw will start automatically when rdpuser logs in via RDP"
+          # Create scheduled task using schtasks.exe (runs at system startup as rdpuser)
+          $taskName = "OpenClawGateway"
+          schtasks /Create /TN $taskName /TR $batchPath /SC ONSTART /RU "rdpuser" /RP $password /RL HIGHEST /F
+          
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Scheduled task '$taskName' created - runs at system startup"
+            # Run it now
+            schtasks /Run /TN $taskName
+            Write-Host "Scheduled task started"
+          } else {
+            Write-Host "WARNING: Could not create scheduled task"
+          }
 
       - name: Display Connection Info
         id: connection
