@@ -289,21 +289,23 @@ jobs:
         shell: pwsh
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          OPENCLAW_AUTH_PROFILES: ${{ secrets.OPENCLAW_AUTH_PROFILES }}
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           $openclawDir = "$rdpUserHome\.openclaw"
-          $openclawWorkspace = "$rdpUserHome\.openclaw\workspace"
+          $openclawWorkspace = "$openclawDir\workspace"
           
           Write-Host "Configuring OpenClaw..."
           
           New-Item -ItemType Directory -Path $openclawDir -Force | Out-Null
-          New-Item -ItemType Directory -Path "$openclawDir\agents\main\agent" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$openclawDir\credentials" -Force | Out-Null
           New-Item -ItemType Directory -Path $openclawWorkspace -Force | Out-Null
+          New-Item -ItemType Directory -Path "$openclawDir\agents\main\agent" -Force | Out-Null
           
+          # Create openclaw.json with pre-configured settings
           $workspacePath = $openclawWorkspace -replace '\\', '/'
           
-          $configJson = '{
+          $configJson = @"
+          {
             "channels": {
               "telegram": {
                 "enabled": true
@@ -311,7 +313,7 @@ jobs:
             },
             "agents": {
               "defaults": {
-                "workspace": "' + $workspacePath + '",
+                "workspace": "$workspacePath",
                 "model": "claude-sonnet",
                 "provider": "antigravity"
               }
@@ -323,10 +325,19 @@ jobs:
                 "default": ["antigravity", "anthropic", "openai"]
               }
             }
-          }'
+          }
+          "@
           
           $configJson | Out-File -FilePath "$openclawDir\openclaw.json" -Encoding UTF8
           Write-Host "Created openclaw.json"
+          
+          # Inject auth-profiles.json from secret if provided
+          if ($env:OPENCLAW_AUTH_PROFILES) {
+            $env:OPENCLAW_AUTH_PROFILES | Out-File -FilePath "$openclawDir\agents\main\agent\auth-profiles.json" -Encoding UTF8
+            Write-Host "Injected auth-profiles.json from secret"
+          } else {
+            Write-Host "WARNING: No OPENCLAW_AUTH_PROFILES secret found - manual auth required"
+          }
           
           [Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "$env:TELEGRAM_BOT_TOKEN", "Machine")
           Write-Host "Set TELEGRAM_BOT_TOKEN environment variable"
@@ -334,11 +345,7 @@ jobs:
           $agentsContent = "You are a helpful AI assistant running on a GitHub Actions RDP session."
           $agentsContent | Out-File -FilePath "$openclawWorkspace\AGENTS.md" -Encoding UTF8
           
-          $authProfilesJson = '{"profiles": {}, "version": 1}'
-          $authProfilesJson | Out-File -FilePath "$openclawDir\agents\main\agent\auth-profiles.json" -Encoding UTF8
-          
           $null = cmd /c "icacls `"$openclawDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $null = cmd /c "icacls `"$openclawWorkspace`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
           Write-Host ""
@@ -346,11 +353,13 @@ jobs:
           Write-Host "OpenClaw configured!"
           Write-Host "=============================================="
           Write-Host "Telegram: Ready (token from secrets)"
+          if ($env:OPENCLAW_AUTH_PROFILES) {
+            Write-Host "Auth profiles: Ready (from secrets)"
+          } else {
+            Write-Host "Auth profiles: Manual auth required"
+          }
           Write-Host ""
-          Write-Host "AFTER CONNECTING VIA RDP, run:"
-          Write-Host "  openclaw models auth login --provider antigravity"
-          Write-Host ""
-          Write-Host "Then start the gateway:"
+          Write-Host "Start the gateway:"
           Write-Host "  openclaw gateway"
           Write-Host "=============================================="
           
