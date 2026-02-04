@@ -16,7 +16,7 @@ on:
 
 env:
   SESSION_TIMEOUT_MINUTES: 355  # Close to 6 hour GitHub limit
-  CHAIN_BUFFER_MINUTES: 10     # Start new session 10 min before timeout (enough for setup)
+  CHAIN_BUFFER_MINUTES: 20     # Start new session 20 min before timeout (enough for setup + artifact download)
 
 jobs:
   rdp-session:
@@ -588,3 +588,35 @@ jobs:
           retention-days: 90
           if-no-files-found: ignore
           overwrite: true
+
+      - name: Cleanup old workflow runs
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          $repo = "${{ github.repository }}"
+          $currentRunId = "${{ github.run_id }}"
+          
+          Write-Host "Cleaning up old workflow runs (keeping 2 most recent)..."
+          
+          # Get all runs for this workflow, sorted by created_at desc
+          $runs = gh run list --repo $repo --workflow "rdp-session.yml" --limit 50 --json databaseId,status,createdAt 2>$null | ConvertFrom-Json
+          
+          if ($runs -and $runs.Count -gt 2) {
+            # Keep the 2 most recent runs (current + previous for artifact download during overlap)
+            # Delete everything else
+            $toKeep = $runs | Select-Object -First 2
+            $toDelete = $runs | Select-Object -Skip 2
+            
+            Write-Host "Keeping runs: $($toKeep.databaseId -join ', ')"
+            
+            foreach ($run in $toDelete) {
+              Write-Host "Deleting old run: $($run.databaseId) (created: $($run.createdAt))"
+              gh run delete $run.databaseId --repo $repo 2>$null
+            }
+            Write-Host "Deleted $($toDelete.Count) old run(s)"
+          } else {
+            Write-Host "No old runs to clean up (keeping 2 most recent)"
+          }
+        continue-on-error: true
