@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Generate session info
         id: session
@@ -352,10 +352,36 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           $repo = "${{ github.repository }}"
+          $currentRunId = "${{ github.run_id }}"
           
           Write-Host "Checking for previous workspace artifact..."
+          Write-Host "Current run ID: $currentRunId"
           
-          # Find the latest non-expired workspace artifact and get its run ID
+          # Check if there's another run still in progress (the one that triggered us)
+          # If so, wait for it to complete and upload its artifact
+          $maxWaitMinutes = 25
+          $waitedMinutes = 0
+          
+          while ($waitedMinutes -lt $maxWaitMinutes) {
+            # Get in-progress runs (excluding current)
+            $inProgressRuns = gh run list --repo $repo --workflow "rdp-session.yml" --status in_progress --json databaseId 2>$null | ConvertFrom-Json
+            $otherInProgress = $inProgressRuns | Where-Object { $_.databaseId -ne [int]$currentRunId }
+            
+            if ($otherInProgress -and $otherInProgress.Count -gt 0) {
+              Write-Host "Previous session still running (run $($otherInProgress[0].databaseId)), waiting for it to upload artifact..."
+              Start-Sleep -Seconds 60
+              $waitedMinutes++
+            } else {
+              Write-Host "No other sessions in progress, proceeding with artifact download"
+              break
+            }
+          }
+          
+          if ($waitedMinutes -ge $maxWaitMinutes) {
+            Write-Host "WARNING: Timed out waiting for previous session, proceeding anyway"
+          }
+          
+          # Now find the latest artifact
           $result = gh api "repos/$repo/actions/artifacts" --jq '[.artifacts[] | select(.name == "openclaw-workspace" and .expired == false)] | first | {id: .id, run_id: .workflow_run.id}' 2>$null | ConvertFrom-Json
           
           if ($result -and $result.id) {
@@ -474,12 +500,15 @@ jobs:
           $nextChainCount = [int]"${{ steps.session.outputs.CHAIN_COUNT }}" + 1
           $repo = "${{ github.repository }}"
           $token = "${{ secrets.GH_PAT }}"
+          $rdpUserHome = "C:\Users\rdpuser"
           
           Write-Host "Chain trigger scheduled in $chainMinutes minutes"
           
-          $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(@"
+          # Create chain trigger script
+          $chainScript = @"
+          Write-Host "Triggering next session..."
           `$headers = @{
-            'Authorization' = 'Bearer $token'
+            'Authorization' = "Bearer $token"
             'Accept' = 'application/vnd.github.v3+json'
           }
           `$body = @{
@@ -489,11 +518,16 @@ jobs:
               chain_count = $nextChainCount
             }
           } | ConvertTo-Json
-          Invoke-RestMethod -Uri 'https://api.github.com/repos/$repo/dispatches' -Method Post -Headers `$headers -Body `$body -ContentType 'application/json'
-          "@))
+          
+          Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/dispatches" -Method Post -Headers `$headers -Body `$body -ContentType 'application/json'
+          Write-Host "Chain triggered! Next session will wait for this session to finish uploading artifact."
+          "@
+          
+          $scriptPath = "$rdpUserHome\chain-trigger.ps1"
+          $chainScript | Out-File -FilePath $scriptPath -Encoding UTF8
           
           $triggerTime = (Get-Date).AddMinutes($chainMinutes)
-          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -EncodedCommand $encodedCommand"
+          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`""
           $trigger = New-ScheduledTaskTrigger -Once -At $triggerTime
           $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
           
