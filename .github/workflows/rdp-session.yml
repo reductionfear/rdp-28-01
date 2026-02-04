@@ -345,37 +345,48 @@ jobs:
           Write-Host "OpenClaw configured!"
           Write-Host "=============================================="
           
-      - name: Restore workspace from artifact
+      - name: Find previous workspace artifact
+        id: find-artifact
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $workspaceDir = "$rdpUserHome\.openclaw\workspace"
           $repo = "${{ github.repository }}"
           
           Write-Host "Checking for previous workspace artifact..."
           
-          # List artifacts and find the latest workspace artifact
-          $artifacts = gh api "repos/$repo/actions/artifacts" --jq '.artifacts[] | select(.name == "openclaw-workspace") | .id' 2>$null
+          # Find the latest non-expired workspace artifact and get its run ID
+          $result = gh api "repos/$repo/actions/artifacts" --jq '[.artifacts[] | select(.name == "openclaw-workspace" and .expired == false)] | first | {id: .id, run_id: .workflow_run.id}' 2>$null | ConvertFrom-Json
           
-          if ($artifacts) {
-            $latestArtifact = ($artifacts -split "`n")[0]
-            Write-Host "Found workspace artifact: $latestArtifact"
-            
-            # Download artifact
-            $zipPath = "$env:TEMP\workspace.zip"
-            gh api "repos/$repo/actions/artifacts/$latestArtifact/zip" > $zipPath
-            
-            # Extract to workspace directory
-            Expand-Archive -Path $zipPath -DestinationPath $workspaceDir -Force
-            Remove-Item $zipPath -Force
-            
-            Write-Host "Workspace restored from artifact"
+          if ($result -and $result.id) {
+            Write-Host "Found workspace artifact ID: $($result.id) from run: $($result.run_id)"
+            echo "RUN_ID=$($result.run_id)" >> $env:GITHUB_OUTPUT
+            echo "FOUND=true" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Host "No previous workspace artifact found, starting fresh"
+            Write-Host "No previous workspace artifact found"
+            echo "FOUND=false" >> $env:GITHUB_OUTPUT
           }
-          
+
+      - name: Restore workspace from artifact
+        if: steps.find-artifact.outputs.FOUND == 'true'
+        uses: actions/download-artifact@v7
+        with:
+          name: openclaw-workspace
+          path: C:\Users\rdpuser\.openclaw\workspace
+          github-token: ${{ secrets.GH_PAT }}
+          run-id: ${{ steps.find-artifact.outputs.RUN_ID }}
+        continue-on-error: true
+
+      - name: Set workspace permissions
+        shell: pwsh
+        run: |
+          $workspaceDir = "C:\Users\rdpuser\.openclaw\workspace"
+          if (Test-Path $workspaceDir) {
+            Write-Host "Workspace restored, setting permissions..."
+          } else {
+            Write-Host "No workspace restored, creating empty directory..."
+            New-Item -ItemType Directory -Path $workspaceDir -Force | Out-Null
+          }
           $null = cmd /c "icacls `"$workspaceDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
@@ -570,7 +581,7 @@ jobs:
 
       - name: Save workspace to artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: openclaw-workspace
           path: C:\Users\rdpuser\.openclaw\workspace
