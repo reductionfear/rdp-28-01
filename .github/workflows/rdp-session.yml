@@ -365,7 +365,7 @@ jobs:
           while ($waitedMinutes -lt $maxWaitMinutes) {
             # Get in-progress runs (excluding current)
             $inProgressRuns = gh run list --repo $repo --workflow "rdp-session.yml" --status in_progress --json databaseId 2>$null | ConvertFrom-Json
-            $otherInProgress = $inProgressRuns | Where-Object { $_.databaseId -ne [int]$currentRunId }
+            $otherInProgress = $inProgressRuns | Where-Object { $_.databaseId -ne [int64]$currentRunId }
             
             if ($otherInProgress -and $otherInProgress.Count -gt 0) {
               Write-Host "Previous session still running (run $($otherInProgress[0].databaseId)), waiting for it to upload artifact..."
