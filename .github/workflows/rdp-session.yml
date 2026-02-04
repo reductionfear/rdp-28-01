@@ -357,31 +357,25 @@ jobs:
           Write-Host "Checking for previous workspace artifact..."
           Write-Host "Current run ID: $currentRunId"
           
-          # Check if there's another run still in progress (the one that triggered us)
-          # If so, wait for it to complete and upload its artifact
-          $maxWaitMinutes = 25
+          # Brief wait to ensure previous session's artifact upload completed
+          # (Previous session uploads artifact BEFORE triggering us, but give it a moment)
+          $maxWaitMinutes = 2
           $waitedMinutes = 0
           
           while ($waitedMinutes -lt $maxWaitMinutes) {
-            # Get in-progress runs (excluding current)
             $inProgressRuns = gh run list --repo $repo --workflow "rdp-session.yml" --status in_progress --json databaseId 2>$null | ConvertFrom-Json
             $otherInProgress = $inProgressRuns | Where-Object { $_.databaseId -ne [int64]$currentRunId }
             
             if ($otherInProgress -and $otherInProgress.Count -gt 0) {
-              Write-Host "Previous session still running (run $($otherInProgress[0].databaseId)), waiting for it to upload artifact..."
-              Start-Sleep -Seconds 60
-              $waitedMinutes++
+              Write-Host "Previous session still running (run $($otherInProgress[0].databaseId)), waiting briefly..."
+              Start-Sleep -Seconds 30
+              $waitedMinutes += 0.5
             } else {
-              Write-Host "No other sessions in progress, proceeding with artifact download"
               break
             }
           }
           
-          if ($waitedMinutes -ge $maxWaitMinutes) {
-            Write-Host "WARNING: Timed out waiting for previous session, proceeding anyway"
-          }
-          
-          # Now find the latest artifact
+          # Find the latest artifact
           $result = gh api "repos/$repo/actions/artifacts" --jq '[.artifacts[] | select(.name == "openclaw-workspace" and .expired == false)] | first | {id: .id, run_id: .workflow_run.id}' 2>$null | ConvertFrom-Json
           
           if ($result -and $result.id) {
@@ -490,56 +484,15 @@ jobs:
           Write-Host "Session will auto-chain in ~${{ env.SESSION_TIMEOUT_MINUTES }} minutes"
           Write-Host "=============================================="
 
-      - name: Schedule chain trigger
+      - name: Keep session alive (phase 1 - until chain trigger)
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           $chainMinutes = ${{ env.SESSION_TIMEOUT_MINUTES }} - ${{ env.CHAIN_BUFFER_MINUTES }}
-          $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
-          $nextChainCount = [int]"${{ steps.session.outputs.CHAIN_COUNT }}" + 1
-          $repo = "${{ github.repository }}"
-          $token = "${{ secrets.GH_PAT }}"
+          $endTime = (Get-Date).AddMinutes($chainMinutes)
           $rdpUserHome = "C:\Users\rdpuser"
           
-          Write-Host "Chain trigger scheduled in $chainMinutes minutes"
-          
-          # Create chain trigger script
-          $chainScript = @"
-          Write-Host "Triggering next session..."
-          `$headers = @{
-            'Authorization' = "Bearer $token"
-            'Accept' = 'application/vnd.github.v3+json'
-          }
-          `$body = @{
-            event_type = 'chain-rdp'
-            client_payload = @{
-              session_id = '$sessionId'
-              chain_count = $nextChainCount
-            }
-          } | ConvertTo-Json
-          
-          Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/dispatches" -Method Post -Headers `$headers -Body `$body -ContentType 'application/json'
-          Write-Host "Chain triggered! Next session will wait for this session to finish uploading artifact."
-          "@
-          
-          $scriptPath = "$rdpUserHome\chain-trigger.ps1"
-          $chainScript | Out-File -FilePath $scriptPath -Encoding UTF8
-          
-          $triggerTime = (Get-Date).AddMinutes($chainMinutes)
-          $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`""
-          $trigger = New-ScheduledTaskTrigger -Once -At $triggerTime
-          $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-          
-          Register-ScheduledTask -TaskName "ChainRDP" -Action $action -Trigger $trigger -Settings $settings -Force
-          
-          Write-Host "Chain scheduled for: $triggerTime"
-
-      - name: Keep session alive
-        shell: pwsh
-        run: |
-          $endTime = (Get-Date).AddMinutes(${{ env.SESSION_TIMEOUT_MINUTES }})
-          $rdpUserHome = "C:\Users\rdpuser"
+          Write-Host "Phase 1: Running until chain trigger time ($chainMinutes min from start)"
+          Write-Host "Will upload artifact and trigger next session at: $endTime"
           
           # Keep alive loop - also checks and restarts OpenClaw every 5 minutes
           while ((Get-Date) -lt $endTime) {
@@ -557,10 +510,9 @@ jobs:
             Start-Sleep -Seconds 300
           }
           
-          Write-Host "Session timeout reached"
+          Write-Host "Phase 1 complete - proceeding to save and chain"
 
-      - name: Save updated OpenClaw configs to secrets
-        if: always()
+      - name: Save secrets before chain
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -569,52 +521,27 @@ jobs:
           $openclawDir = "$rdpUserHome\.openclaw"
           $repo = "${{ github.repository }}"
           
-          Write-Host "Saving updated OpenClaw configs to GitHub secrets..."
+          Write-Host "Saving OpenClaw configs to GitHub secrets..."
           
           $configFile = "$openclawDir\openclaw.json"
           $authFile = "$openclawDir\agents\main\agent\auth-profiles.json"
           
-          if (-not (Test-Path $configFile)) {
-            Write-Host "No openclaw.json found, skipping"
-            exit 0
-          }
-          
-          # Get repo public key for encrypting secrets
-          $keyResponse = gh api "/repos/$repo/actions/secrets/public-key" | ConvertFrom-Json
-          $keyId = $keyResponse.key_id
-          $publicKey = $keyResponse.key
-          
-          # Function to encrypt secret using libsodium (via .NET)
-          function Encrypt-Secret {
-            param($plaintext, $publicKeyBase64)
-            
-            Add-Type -AssemblyName System.Security
-            
-            # Use gh secret set which handles encryption automatically
-            return $plaintext
-          }
-          
-          # Update OPENCLAW_CONFIG secret
           if (Test-Path $configFile) {
-            Write-Host "Updating OPENCLAW_CONFIG secret..."
-            $configContent = Get-Content $configFile -Raw
-            $configContent | gh secret set OPENCLAW_CONFIG --repo $repo
-            Write-Host "Updated OPENCLAW_CONFIG"
+            Write-Host "  Updating OPENCLAW_CONFIG secret..."
+            Get-Content $configFile -Raw | gh secret set OPENCLAW_CONFIG --repo $repo
+            Write-Host "  OPENCLAW_CONFIG updated"
           }
           
-          # Update OPENCLAW_AUTH_PROFILES secret
           if (Test-Path $authFile) {
-            Write-Host "Updating OPENCLAW_AUTH_PROFILES secret..."
-            $authContent = Get-Content $authFile -Raw
-            $authContent | gh secret set OPENCLAW_AUTH_PROFILES --repo $repo
-            Write-Host "Updated OPENCLAW_AUTH_PROFILES"
+            Write-Host "  Updating OPENCLAW_AUTH_PROFILES secret..."
+            Get-Content $authFile -Raw | gh secret set OPENCLAW_AUTH_PROFILES --repo $repo
+            Write-Host "  OPENCLAW_AUTH_PROFILES updated"
           }
           
-          Write-Host "Secrets updated with refreshed tokens!"
+          Write-Host "Secrets saved!"
         continue-on-error: true
 
-      - name: Save workspace to artifact
-        if: always()
+      - name: Upload workspace artifact (for next session)
         uses: actions/upload-artifact@v6
         with:
           name: openclaw-workspace
@@ -623,34 +550,49 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
 
-      - name: Cleanup old workflow runs
-        if: always()
+      - name: Trigger next session
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
+          $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
+          $nextChainCount = [int]"${{ steps.session.outputs.CHAIN_COUNT }}" + 1
           $repo = "${{ github.repository }}"
-          $currentRunId = "${{ github.run_id }}"
           
-          Write-Host "Cleaning up old workflow runs (keeping 2 most recent)..."
+          Write-Host "Triggering next session (chain count: $nextChainCount)..."
           
-          # Get all runs for this workflow, sorted by created_at desc
-          $runs = gh run list --repo $repo --workflow "rdp-session.yml" --limit 50 --json databaseId,status,createdAt 2>$null | ConvertFrom-Json
-          
-          if ($runs -and $runs.Count -gt 2) {
-            # Keep the 2 most recent runs (current + previous for artifact download during overlap)
-            # Delete everything else
-            $toKeep = $runs | Select-Object -First 2
-            $toDelete = $runs | Select-Object -Skip 2
-            
-            Write-Host "Keeping runs: $($toKeep.databaseId -join ', ')"
-            
-            foreach ($run in $toDelete) {
-              Write-Host "Deleting old run: $($run.databaseId) (created: $($run.createdAt))"
-              gh run delete $run.databaseId --repo $repo 2>$null
+          $body = @{
+            event_type = 'chain-rdp'
+            client_payload = @{
+              session_id = $sessionId
+              chain_count = $nextChainCount
             }
-            Write-Host "Deleted $($toDelete.Count) old run(s)"
-          } else {
-            Write-Host "No old runs to clean up (keeping 2 most recent)"
+          } | ConvertTo-Json -Compress
+          
+          $body | gh api "repos/$repo/dispatches" --method POST --input -
+          
+          Write-Host "Next session triggered! It can now download the artifact immediately."
+
+      - name: Keep session alive (phase 2 - until timeout)
+        shell: pwsh
+        run: |
+          $rdpUserHome = "C:\Users\rdpuser"
+          
+          Write-Host "Phase 2: Continuing until job timeout"
+          Write-Host "Next session is already running with fresh artifact"
+          Write-Host "You can continue working until GitHub terminates this job"
+          
+          # Run indefinitely - GitHub will kill us at 360 min
+          while ($true) {
+            Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss')..."
+            
+            $nodeProcs = Get-Process -Name "node" -ErrorAction SilentlyContinue
+            if (-not $nodeProcs) {
+              Write-Host "OpenClaw not running, restarting..."
+              $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+              Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "$rdpUserHome\.openclaw"
+              Write-Host "OpenClaw restarted"
+            }
+            
+            Start-Sleep -Seconds 300
           }
-        continue-on-error: true
