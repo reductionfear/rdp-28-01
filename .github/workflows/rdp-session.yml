@@ -16,7 +16,7 @@ on:
 
 env:
   SESSION_TIMEOUT_MINUTES: 355  # Close to 6 hour GitHub limit
-  CHAIN_BUFFER_MINUTES: 20     # Start new session 20 min before timeout (enough for setup + artifact download)
+  CHAIN_BUFFER_MINUTES: 10     # Start new session 10 min before timeout (cached setup takes ~3-5 min)
 
 jobs:
   rdp-session:
@@ -26,6 +26,49 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      # ========== DEPENDENCY CACHING ==========
+      - name: Cache Chocolatey packages
+        id: cache-choco
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\ProgramData\chocolatey\lib
+            C:\ProgramData\chocolatey\bin
+            C:\Program Files\Git
+            C:\Program Files\Microsoft VS Code
+            C:\Program Files\nodejs
+            C:\Python*
+            C:\Program Files\7-Zip
+            C:\Program Files\Notepad++
+            C:\Program Files\Mozilla Firefox
+            C:\Program Files\Google\Chrome
+            C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps\python*.exe
+          key: choco-devtools-v1-${{ runner.os }}
+          enableCrossOsArchive: false
+
+      - name: Cache Tailscale installer
+        id: cache-tailscale
+        uses: actions/cache@v4
+        with:
+          path: C:\tailscale-cache
+          key: tailscale-v1-${{ runner.os }}
+
+      - name: Get current date for cache key
+        id: date
+        shell: pwsh
+        run: |
+          $today = (Get-Date).ToString("yyyy-MM-dd")
+          echo "TODAY=$today" >> $env:GITHUB_OUTPUT
+
+      - name: Cache npm global packages (daily)
+        id: cache-npm-global
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\rdpuser\.npm-global
+          key: npm-global-openclaw-v1-${{ runner.os }}-${{ steps.date.outputs.TODAY }}
+          restore-keys: |
+            npm-global-openclaw-v1-${{ runner.os }}-
 
       - name: Generate session info
         id: session
@@ -61,12 +104,19 @@ jobs:
       - name: Install Tailscale
         shell: pwsh
         run: |
-          Write-Host "Installing Tailscale..."
+          $cacheDir = "C:\tailscale-cache"
+          $cachedMsi = "$cacheDir\tailscale-setup.msi"
           
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $installer = "$env:TEMP\tailscale-setup.msi"
-          
-          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+          if (Test-Path $cachedMsi) {
+            Write-Host "Installing Tailscale from cache..."
+            $installer = $cachedMsi
+          } else {
+            Write-Host "Downloading Tailscale (first run, will be cached)..."
+            New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+            $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+            $installer = $cachedMsi
+            Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+          }
           
           Start-Process msiexec.exe -ArgumentList "/i", $installer, "/quiet", "/norestart" -Wait
           
@@ -237,9 +287,10 @@ jobs:
           Write-Host "  NPM_CONFIG_PREFIX = $rdpUserHome\.npm-global"
 
       - name: Install Development Tools
+        if: steps.cache-choco.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          Write-Host "Installing development tools..."
+          Write-Host "Installing development tools (no cache found)..."
           
           Set-ExecutionPolicy Bypass -Scope Process -Force
           [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
@@ -267,6 +318,44 @@ jobs:
           Write-Host "Development tools installed (with uBlock Origin for browsers)"
         continue-on-error: true
 
+      - name: Restore Chocolatey tools to PATH (cache hit)
+        if: steps.cache-choco.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          Write-Host "Chocolatey cache hit - restoring PATH entries..."
+          
+          # Ensure chocolatey shims are on PATH
+          $chocobin = "C:\ProgramData\chocolatey\bin"
+          if (Test-Path $chocobin) {
+            echo $chocobin >> $env:GITHUB_PATH
+          }
+          
+          # Restore PATH for cached tools
+          $toolPaths = @(
+            "C:\Program Files\Git\cmd",
+            "C:\Program Files\nodejs",
+            "C:\Program Files\7-Zip",
+            "C:\Program Files\Notepad++",
+            "C:\Program Files\Microsoft VS Code\bin"
+          )
+          foreach ($p in $toolPaths) {
+            if (Test-Path $p) {
+              echo $p >> $env:GITHUB_PATH
+              Write-Host "  Added to PATH: $p"
+            }
+          }
+          
+          # Re-apply browser extension policies (registry not cached)
+          $chromeExtPath = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
+          New-Item -Path $chromeExtPath -Force | Out-Null
+          Set-ItemProperty -Path $chromeExtPath -Name "1" -Value "cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx"
+          
+          $firefoxExtPath = "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Extensions\Install"
+          New-Item -Path $firefoxExtPath -Force | Out-Null
+          Set-ItemProperty -Path $firefoxExtPath -Name "1" -Value "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+          
+          Write-Host "Cached tools restored"
+
       - name: Configure NPM for rdpuser global installs
         shell: pwsh
         run: |
@@ -284,6 +373,7 @@ jobs:
           Write-Host "NPM prefix: $(npm config get prefix)"
 
       - name: Install OpenClaw
+        if: steps.cache-npm-global.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
@@ -291,13 +381,23 @@ jobs:
           $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
           $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
           
-          Write-Host "Installing openclaw..."
+          Write-Host "Installing openclaw@latest (first chain today or no cache)..."
           npm install -g openclaw@latest
           
           $null = cmd /c "icacls `"$rdpUserHome\.npm-global`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
           Write-Host "OpenClaw installed"
+
+      - name: Restore cached OpenClaw permissions
+        if: steps.cache-npm-global.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          Write-Host "OpenClaw cache hit - setting permissions..."
+          $null = cmd /c "icacls `"$rdpUserHome\.npm-global`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
+          Write-Host "OpenClaw restored from cache"
 
       - name: Configure OpenClaw
         shell: pwsh
@@ -540,6 +640,79 @@ jobs:
           
           Write-Host "Secrets saved!"
         continue-on-error: true
+
+      - name: Clean workspace before upload
+        shell: pwsh
+        run: |
+          $workspace = "C:\Users\rdpuser\.openclaw\workspace"
+          
+          if (-not (Test-Path $workspace)) {
+            Write-Host "No workspace to clean"
+            exit 0
+          }
+          
+          Write-Host "Cleaning transient/large files from workspace before upload..."
+          
+          # Remove known transient directories (downloads, temp, cache, etc.)
+          $transientDirs = @(
+            "downloads", "*/downloads",
+            "temp", "*/temp", "*/tmp",
+            "cache", "*/cache", "*/.cache",
+            "node_modules", "*/node_modules",
+            "__pycache__", "*/__pycache__",
+            ".venv", "*/.venv",
+            "venv", "*/venv"
+          )
+          foreach ($pattern in $transientDirs) {
+            Get-ChildItem -Path $workspace -Directory -Recurse -Filter ($pattern.Split("/")[-1]) -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  Removing dir: $($_.FullName)"
+              Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+          
+          # Remove large media/binary files (>50MB or known extensions)
+          $largeExtensions = @("*.mp4", "*.mkv", "*.avi", "*.mov", "*.webm", "*.mp3", "*.wav", "*.flac",
+                               "*.zip", "*.tar", "*.gz", "*.7z", "*.rar",
+                               "*.iso", "*.img", "*.exe", "*.msi",
+                               "*.bin", "*.dat", "*.psd", "*.raw")
+          foreach ($ext in $largeExtensions) {
+            Get-ChildItem -Path $workspace -Recurse -Filter $ext -File -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  Removing file: $($_.FullName) ($([math]::Round($_.Length/1MB, 1)) MB)"
+              Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+            }
+          }
+          
+          # Remove any files >50MB that slipped through
+          Get-ChildItem -Path $workspace -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 50MB } | ForEach-Object {
+            Write-Host "  Removing large file: $($_.FullName) ($([math]::Round($_.Length/1MB, 1)) MB)"
+            Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+          }
+          
+          # Remove broken symlinks and validate all files are accessible
+          Get-ChildItem -Path $workspace -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+              $null = [System.IO.File]::OpenRead($_.FullName).Close()
+            } catch {
+              Write-Host "  Removing inaccessible file: $($_.FullName)"
+              Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+            }
+          }
+          
+          # Remove empty directories left behind
+          do {
+            $emptyDirs = Get-ChildItem -Path $workspace -Directory -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { @(Get-ChildItem -Path $_.FullName -Force -ErrorAction SilentlyContinue).Count -eq 0 }
+            $emptyDirs | ForEach-Object {
+              Write-Host "  Removing empty dir: $($_.FullName)"
+              Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+            }
+          } while ($emptyDirs -and $emptyDirs.Count -gt 0)
+          
+          # Summary
+          $fileCount = (Get-ChildItem -Path $workspace -Recurse -File -ErrorAction SilentlyContinue).Count
+          $totalSize = (Get-ChildItem -Path $workspace -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+          $sizeMB = [math]::Round($totalSize / 1MB, 1)
+          Write-Host "Workspace ready for upload: $fileCount files, ${sizeMB} MB"
 
       - name: Upload workspace artifact (for next session)
         uses: actions/upload-artifact@v6
