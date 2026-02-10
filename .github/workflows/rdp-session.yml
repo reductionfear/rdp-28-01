@@ -28,24 +28,11 @@ jobs:
         uses: actions/checkout@v6
 
       # ========== DEPENDENCY CACHING ==========
-      - name: Cache Chocolatey packages
-        id: cache-choco
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:\ProgramData\chocolatey\lib
-            C:\ProgramData\chocolatey\bin
-            C:\Program Files\Git
-            C:\Program Files\Microsoft VS Code
-            C:\Program Files\nodejs
-            C:\Python*
-            C:\Program Files\7-Zip
-            C:\Program Files\Notepad++
-            C:\Program Files\Mozilla Firefox
-            C:\Program Files\Google\Chrome
-            C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps\python*.exe
-          key: choco-devtools-v1-${{ runner.os }}
-          enableCrossOsArchive: false
+      # NOTE: Chocolatey caching removed intentionally. windows-latest already has
+      # Git, Node.js, Python pre-installed. Chocolatey installs register in the
+      # Windows registry which is NOT cached by actions/cache, causing restored
+      # files to be non-functional (broken shims, missing PATH entries, etc.).
+      # Installing the few missing tools fresh each time (~2-3 min) is more reliable.
 
       - name: Cache Tailscale installer
         id: cache-tailscale
@@ -93,12 +80,17 @@ jobs:
             }
           }
           
+          # Record job start time as ticks for accurate timeout calculation later
+          $jobStartTicks = (Get-Date).Ticks
+          
           echo "SESSION_ID=$sessionId" >> $env:GITHUB_OUTPUT
           echo "CHAIN_COUNT=$chainCount" >> $env:GITHUB_OUTPUT
+          echo "JOB_START_TICKS=$jobStartTicks" >> $env:GITHUB_OUTPUT
           echo "START_TIME=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')" >> $env:GITHUB_OUTPUT
           
           Write-Host "Session ID: $sessionId"
           Write-Host "Chain iteration: $chainCount"
+          Write-Host "Job start ticks: $jobStartTicks"
 
       # ========== TAILSCALE SETUP ==========
       - name: Install Tailscale
@@ -287,27 +279,60 @@ jobs:
           Write-Host "  NPM_CONFIG_PREFIX = $rdpUserHome\.npm-global"
 
       - name: Install Development Tools
-        if: steps.cache-choco.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          Write-Host "Installing development tools (no cache found)..."
+          Write-Host "Installing development tools (smart install - skips what runner already has)..."
           
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          # Ensure Chocolatey is available (pre-installed on windows-latest)
+          $chocoCmd = Get-Command choco -ErrorAction SilentlyContinue
+          if (-not $chocoCmd) {
+            Write-Host "Chocolatey not found, installing..."
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+            $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          } else {
+            Write-Host "Chocolatey already available at: $($chocoCmd.Source)"
+          }
           
-          $env:PATH = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          # Only install tools that are NOT already on the runner
+          # windows-latest has: Git, Node.js, Python, 7-Zip pre-installed
+          $tools = @(
+            @{ Name = "vscode"; Test = "C:\Program Files\Microsoft VS Code\Code.exe"; Pkg = "vscode.install" },
+            @{ Name = "notepad++"; Test = "C:\Program Files\Notepad++\notepad++.exe"; Pkg = "notepadplusplus" },
+            @{ Name = "firefox"; Test = "C:\Program Files\Mozilla Firefox\firefox.exe"; Pkg = "firefox" },
+            @{ Name = "terminal"; Test = ""; Pkg = "microsoft-windows-terminal" }
+          )
           
-          # Install packages with --ignore-dependencies to avoid resolution issues
-          choco install -y git.install vscode.install nodejs-lts python3 7zip microsoft-windows-terminal notepadplusplus firefox --no-progress --ignore-dependencies
+          $toInstall = @()
+          foreach ($tool in $tools) {
+            if ($tool.Test -and (Test-Path $tool.Test)) {
+              Write-Host "  SKIP: $($tool.Name) already installed"
+            } else {
+              Write-Host "  INSTALL: $($tool.Name)"
+              $toInstall += $tool.Pkg
+            }
+          }
           
-          # Install Chrome separately with --ignore-checksums (Google updates faster than Chocolatey)
-          choco install -y googlechrome --ignore-checksums --no-progress
+          if ($toInstall.Count -gt 0) {
+            $pkgList = $toInstall -join " "
+            Write-Host "Installing: $pkgList"
+            choco install -y $toInstall --no-progress --ignore-dependencies
+          } else {
+            Write-Host "All tools already present"
+          }
+          
+          # Chrome: install separately with --ignore-checksums (Google updates faster than Chocolatey)
+          if (-not (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe")) {
+            Write-Host "  INSTALL: Chrome"
+            choco install -y googlechrome --ignore-checksums --no-progress
+          } else {
+            Write-Host "  SKIP: Chrome already installed"
+          }
           
           # Install uBlock Origin for Chrome via policy
           $chromeExtPath = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
           New-Item -Path $chromeExtPath -Force | Out-Null
-          # uBlock Origin extension ID
           Set-ItemProperty -Path $chromeExtPath -Name "1" -Value "cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx"
           
           # Install uBlock Origin for Firefox via policy
@@ -315,46 +340,8 @@ jobs:
           New-Item -Path $firefoxExtPath -Force | Out-Null
           Set-ItemProperty -Path $firefoxExtPath -Name "1" -Value "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
           
-          Write-Host "Development tools installed (with uBlock Origin for browsers)"
+          Write-Host "Development tools ready (with uBlock Origin for browsers)"
         continue-on-error: true
-
-      - name: Restore Chocolatey tools to PATH (cache hit)
-        if: steps.cache-choco.outputs.cache-hit == 'true'
-        shell: pwsh
-        run: |
-          Write-Host "Chocolatey cache hit - restoring PATH entries..."
-          
-          # Ensure chocolatey shims are on PATH
-          $chocobin = "C:\ProgramData\chocolatey\bin"
-          if (Test-Path $chocobin) {
-            echo $chocobin >> $env:GITHUB_PATH
-          }
-          
-          # Restore PATH for cached tools
-          $toolPaths = @(
-            "C:\Program Files\Git\cmd",
-            "C:\Program Files\nodejs",
-            "C:\Program Files\7-Zip",
-            "C:\Program Files\Notepad++",
-            "C:\Program Files\Microsoft VS Code\bin"
-          )
-          foreach ($p in $toolPaths) {
-            if (Test-Path $p) {
-              echo $p >> $env:GITHUB_PATH
-              Write-Host "  Added to PATH: $p"
-            }
-          }
-          
-          # Re-apply browser extension policies (registry not cached)
-          $chromeExtPath = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
-          New-Item -Path $chromeExtPath -Force | Out-Null
-          Set-ItemProperty -Path $chromeExtPath -Name "1" -Value "cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx"
-          
-          $firefoxExtPath = "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Extensions\Install"
-          New-Item -Path $firefoxExtPath -Force | Out-Null
-          Set-ItemProperty -Path $firefoxExtPath -Name "1" -Value "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
-          
-          Write-Host "Cached tools restored"
 
       - name: Configure NPM for rdpuser global installs
         shell: pwsh
@@ -373,7 +360,6 @@ jobs:
           Write-Host "NPM prefix: $(npm config get prefix)"
 
       - name: Install OpenClaw
-        if: steps.cache-npm-global.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
@@ -381,23 +367,41 @@ jobs:
           $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
           $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
           
-          Write-Host "Installing openclaw@latest (first chain today or no cache)..."
-          npm install -g openclaw@latest
+          # Validate whether cache actually restored a working openclaw
+          $openclawBin = "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs"
+          $cacheWorking = $false
+          
+          if ("${{ steps.cache-npm-global.outputs.cache-hit }}" -eq "true") {
+            if (Test-Path $openclawBin) {
+              Write-Host "Cache hit AND openclaw binary exists - validating..."
+              try {
+                $ver = node $openclawBin --version 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "OpenClaw restored from cache: $ver"
+                  $cacheWorking = $true
+                } else {
+                  Write-Host "WARNING: Cached openclaw binary failed validation (exit $LASTEXITCODE)"
+                }
+              } catch {
+                Write-Host "WARNING: Cached openclaw binary threw error: $_"
+              }
+            } else {
+              Write-Host "WARNING: Cache hit but openclaw binary not found at $openclawBin"
+            }
+          } else {
+            Write-Host "No npm cache hit"
+          }
+          
+          if (-not $cacheWorking) {
+            Write-Host "Installing openclaw@latest fresh..."
+            npm install -g openclaw@latest
+            Write-Host "OpenClaw installed fresh"
+          }
           
           $null = cmd /c "icacls `"$rdpUserHome\.npm-global`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
-          Write-Host "OpenClaw installed"
-
-      - name: Restore cached OpenClaw permissions
-        if: steps.cache-npm-global.outputs.cache-hit == 'true'
-        shell: pwsh
-        run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          Write-Host "OpenClaw cache hit - setting permissions..."
-          $null = cmd /c "icacls `"$rdpUserHome\.npm-global`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $global:LASTEXITCODE = 0
-          Write-Host "OpenClaw restored from cache"
+          Write-Host "OpenClaw ready"
 
       - name: Configure OpenClaw
         shell: pwsh
@@ -587,16 +591,31 @@ jobs:
       - name: Keep session alive (phase 1 - until chain trigger)
         shell: pwsh
         run: |
+          # Calculate end time from JOB START, not from now.
+          # Phase 1 starts after setup (~5-20 min), so using (Get-Date) here
+          # would overshoot the 360-min GitHub limit and get killed before chaining.
+          $jobStart = [DateTime]::new([long]"${{ steps.session.outputs.JOB_START_TICKS }}")
           $chainMinutes = ${{ env.SESSION_TIMEOUT_MINUTES }} - ${{ env.CHAIN_BUFFER_MINUTES }}
-          $endTime = (Get-Date).AddMinutes($chainMinutes)
+          $endTime = $jobStart.AddMinutes($chainMinutes)
           $rdpUserHome = "C:\Users\rdpuser"
           
-          Write-Host "Phase 1: Running until chain trigger time ($chainMinutes min from start)"
-          Write-Host "Will upload artifact and trigger next session at: $endTime"
+          $setupElapsed = [math]::Round(((Get-Date) - $jobStart).TotalMinutes, 1)
+          $remainingMinutes = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
+          
+          Write-Host "Phase 1: Keep alive until chain trigger"
+          Write-Host "  Job started:       $($jobStart.ToString('HH:mm:ss'))"
+          Write-Host "  Setup took:        $setupElapsed min"
+          Write-Host "  Chain trigger at:  $($endTime.ToString('HH:mm:ss')) ($chainMinutes min from job start)"
+          Write-Host "  Remaining:         $remainingMinutes min"
+          
+          if ((Get-Date) -ge $endTime) {
+            Write-Host "WARNING: Setup took longer than chain window! Proceeding to chain immediately."
+          }
           
           # Keep alive loop - also checks and restarts OpenClaw every 5 minutes
           while ((Get-Date) -lt $endTime) {
-            Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss')..."
+            $left = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
+            Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss') ($left min until chain)..."
             
             # Check if OpenClaw is running, restart if not
             $nodeProcs = Get-Process -Name "node" -ErrorAction SilentlyContinue
@@ -742,9 +761,27 @@ jobs:
             }
           } | ConvertTo-Json -Compress
           
-          $body | gh api "repos/$repo/dispatches" --method POST --input -
-          
-          Write-Host "Next session triggered! It can now download the artifact immediately."
+          # Retry up to 3 times with backoff
+          $maxRetries = 3
+          for ($i = 1; $i -le $maxRetries; $i++) {
+            try {
+              $body | gh api "repos/$repo/dispatches" --method POST --input -
+              if ($LASTEXITCODE -eq 0) {
+                Write-Host "Next session triggered successfully on attempt $i"
+                break
+              }
+              Write-Host "WARNING: gh api exited with code $LASTEXITCODE (attempt $i/$maxRetries)"
+            } catch {
+              Write-Host "WARNING: Exception on attempt $i/$maxRetries - $_"
+            }
+            if ($i -lt $maxRetries) {
+              $wait = $i * 15
+              Write-Host "Retrying in $wait seconds..."
+              Start-Sleep -Seconds $wait
+            } else {
+              Write-Host "ERROR: All $maxRetries attempts to trigger next session failed!"
+            }
+          }
 
       - name: Keep session alive (phase 2 - until timeout)
         shell: pwsh
