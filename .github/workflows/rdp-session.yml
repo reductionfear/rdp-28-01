@@ -82,16 +82,16 @@ jobs:
       # files to be non-functional (broken shims, missing PATH entries, etc.).
       # Installing the few missing tools fresh each time (~2-3 min) is more reliable.
 
-      - name: Cache Tailscale installer
+      - name: Restore Tailscale installer cache
         id: cache-tailscale
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: C:\tailscale-cache
           key: tailscale-v1-${{ runner.os }}
 
-      - name: Cache npm global packages
+      - name: Restore npm global packages cache
         id: cache-npm-global
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: C:\Users\rdpuser\.npm-global
           key: npm-global-openclaw-${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}-${{ runner.os }}
@@ -689,6 +689,25 @@ jobs:
               Write-Host "ERROR: All $maxRetries attempts to trigger next session failed!"
             }
           }
+
+      # ========== EXPLICIT CACHE SAVE ==========
+      # actions/cache/restore does not register a post-hook, so we must save
+      # explicitly. This runs before the infinite phase-2 loop to guarantee
+      # caches are persisted even when GitHub kills the job at 360 min.
+
+      - name: Save Tailscale installer cache
+        if: always() && steps.cache-tailscale.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: C:\tailscale-cache
+          key: tailscale-v1-${{ runner.os }}
+
+      - name: Save npm global packages cache
+        if: always() && steps.cache-npm-global.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: C:\Users\rdpuser\.npm-global
+          key: npm-global-openclaw-${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}-${{ runner.os }}
 
       - name: Keep session alive (phase 2 - until timeout)
         if: ${{ !cancelled() }}
