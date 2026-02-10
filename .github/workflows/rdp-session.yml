@@ -696,14 +696,14 @@ jobs:
       # caches are persisted even when GitHub kills the job at 360 min.
 
       - name: Save Tailscale installer cache
-        if: always() && steps.cache-tailscale.outputs.cache-hit != 'true'
+        if: ${{ always() && steps.cache-tailscale.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v5
         with:
           path: C:\tailscale-cache
           key: tailscale-v1-${{ runner.os }}
 
       - name: Save npm global packages cache
-        if: always() && steps.cache-npm-global.outputs.cache-hit != 'true'
+        if: ${{ always() && steps.cache-npm-global.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v5
         with:
           path: C:\Users\rdpuser\.npm-global
