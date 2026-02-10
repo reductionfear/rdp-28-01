@@ -72,12 +72,8 @@ jobs:
           echo "CHAIN_COUNT=$chainCount" >> $env:GITHUB_OUTPUT
           echo "OPENCLAW_CACHE_VERSION=$openclawCacheVersion" >> $env:GITHUB_OUTPUT
           echo "JOB_START_TICKS=$jobStartTicks" >> $env:GITHUB_OUTPUT
-          echo "START_TIME=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')" >> $env:GITHUB_OUTPUT
           
-          Write-Host "Session ID: $sessionId"
-          Write-Host "Chain iteration: $chainCount"
-          Write-Host "OpenClaw cache version: $openclawCacheVersion"
-          Write-Host "Job start ticks: $jobStartTicks"
+          Write-Host "Session: $sessionId | Chain: $chainCount | Cache: $openclawCacheVersion"
 
       # ========== DEPENDENCY CACHING ==========
       # NOTE: Chocolatey caching removed intentionally. windows-latest already has
@@ -88,14 +84,14 @@ jobs:
 
       - name: Cache Tailscale installer
         id: cache-tailscale
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: C:\tailscale-cache
           key: tailscale-v1-${{ runner.os }}
 
       - name: Cache npm global packages
         id: cache-npm-global
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: C:\Users\rdpuser\.npm-global
           key: npm-global-openclaw-${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}-${{ runner.os }}
@@ -108,10 +104,10 @@ jobs:
           $cachedMsi = "$cacheDir\tailscale-setup.msi"
           
           if (Test-Path $cachedMsi) {
-            Write-Host "Installing Tailscale from cache..."
+            Write-Host "Tailscale: installing from cache"
             $installer = $cachedMsi
           } else {
-            Write-Host "Downloading Tailscale (first run, will be cached)..."
+            Write-Host "Tailscale: downloading (will be cached)"
             New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
             $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
             $installer = $cachedMsi
@@ -122,8 +118,6 @@ jobs:
           
           $env:PATH += ";C:\Program Files\Tailscale"
           echo "C:\Program Files\Tailscale" >> $env:GITHUB_PATH
-          
-          Write-Host "Tailscale installed successfully"
 
       - name: Connect to Tailscale
         shell: pwsh
@@ -132,8 +126,6 @@ jobs:
         run: |
           $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
           $hostname = "gh-rdp-$sessionId"
-          
-          Write-Host "Connecting to Tailscale as: $hostname"
           
           Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
@@ -151,30 +143,18 @@ jobs:
           Write-Host "TAILSCALE IP: $status"
           Write-Host "HOSTNAME: $hostname"
           Write-Host "=========================================="
-          
-          echo "TAILSCALE_IP=$status" >> $env:GITHUB_OUTPUT
 
       # ========== RDP SETUP ==========
       - name: Configure RDP Access
         shell: pwsh
         run: |
-          Write-Host "Configuring RDP access..."
-          
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=tcp localport=3389
-          
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
-          
-          # Enable clipboard redirection
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableClip" -Value 0
-          
-          # Enable drive redirection (access local drives from RDP)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableCdm" -Value 0
-          
-          Write-Host "RDP configured successfully"
+          Write-Host "RDP configured"
 
       - name: Create RDP User
         shell: pwsh
@@ -199,14 +179,9 @@ jobs:
           
           Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
-          
-          Write-Host "=========================================="
-          Write-Host "RDP CREDENTIALS"
-          Write-Host "Username: $username"
-          Write-Host "Password: (check secrets or generated above)"
-          Write-Host "=========================================="
+          Write-Host "RDP user '$username' ready"
 
-      - name: Initialize rdpuser profile
+      - name: Initialize rdpuser profile and environment
         id: rdpuser
         shell: pwsh
         env:
@@ -214,51 +189,26 @@ jobs:
         run: |
           $username = "rdpuser"
           $password = $env:RDP_PASSWORD
-          
-          Write-Host "Initializing user profile for rdpuser..."
+          $rdpUserHome = "C:\Users\rdpuser"
           
           # Trigger proper Windows profile creation by running a process as the user
           $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
           $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
-          
-          # Start a process as rdpuser to force Windows to create the profile properly
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "echo Profile initialized" -Credential $credential -Wait -NoNewWindow -ErrorAction SilentlyContinue
-          
           Start-Sleep -Seconds 5
           
-          $rdpUserHome = "C:\Users\rdpuser"
-          
-          # Create additional directories
-          New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw\workspace" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
-          
-          Write-Host "rdpuser USERPROFILE: $rdpUserHome"
-          
-          echo "RDPUSER_HOME=$rdpUserHome" >> $env:GITHUB_OUTPUT
-          
-          $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $global:LASTEXITCODE = 0
-          
-          Write-Host "Profile initialization complete: $rdpUserHome"
-
-      - name: Configure environment for rdpuser
-        shell: pwsh
-        run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          
-          Write-Host "Configuring environment for rdpuser: $rdpUserHome"
-          
-          # Create directories
-          New-Item -ItemType Directory -Path "$rdpUserHome\projects" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.openclaw\workspace" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.npm-global" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Roaming" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\AppData\Local" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$rdpUserHome\.local\bin" -Force | Out-Null
+          # Create all directories
+          $dirs = @(
+            "$rdpUserHome\projects",
+            "$rdpUserHome\.openclaw",
+            "$rdpUserHome\.openclaw\workspace",
+            "$rdpUserHome\.openclaw\agents\main\agent",
+            "$rdpUserHome\.npm-global",
+            "$rdpUserHome\.local\bin",
+            "$rdpUserHome\AppData\Roaming",
+            "$rdpUserHome\AppData\Local"
+          )
+          $dirs | ForEach-Object { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
           
           # Set machine-wide environment variables
           [Environment]::SetEnvironmentVariable("OPENCLAW_STATE_DIR", "$rdpUserHome\.openclaw", "Machine")
@@ -267,30 +217,21 @@ jobs:
           
           # Update PATH
           $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-          $newPaths = @(
-            "$rdpUserHome\.npm-global",
-            "$rdpUserHome\.local\bin"
-          )
-          foreach ($p in $newPaths) {
-            if ($currentPath -notlike "*$p*") {
-              $currentPath = "$p;$currentPath"
-            }
+          foreach ($p in @("$rdpUserHome\.npm-global", "$rdpUserHome\.local\bin")) {
+            if ($currentPath -notlike "*$p*") { $currentPath = "$p;$currentPath" }
           }
           [Environment]::SetEnvironmentVariable("Path", $currentPath, "Machine")
           
+          # Grant rdpuser full control
           $null = cmd /c "icacls `"$rdpUserHome`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
           
-          Write-Host "Environment configured:"
-          Write-Host "  OPENCLAW_STATE_DIR = $rdpUserHome\.openclaw"
-          Write-Host "  OPENCLAW_WORKSPACE = $rdpUserHome\.openclaw\workspace"
-          Write-Host "  NPM_CONFIG_PREFIX = $rdpUserHome\.npm-global"
+          echo "RDPUSER_HOME=$rdpUserHome" >> $env:GITHUB_OUTPUT
+          Write-Host "Profile and environment configured: $rdpUserHome"
 
       - name: Install Development Tools
         shell: pwsh
         run: |
-          Write-Host "Installing development tools (smart install - skips what runner already has)..."
-          
           # Ensure Chocolatey is available (pre-installed on windows-latest)
           $chocoCmd = Get-Command choco -ErrorAction SilentlyContinue
           if (-not $chocoCmd) {
@@ -347,25 +288,7 @@ jobs:
           $firefoxExtPath = "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Extensions\Install"
           New-Item -Path $firefoxExtPath -Force | Out-Null
           Set-ItemProperty -Path $firefoxExtPath -Name "1" -Value "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
-          
-          Write-Host "Development tools ready (with uBlock Origin for browsers)"
         continue-on-error: true
-
-      - name: Configure NPM for rdpuser global installs
-        shell: pwsh
-        run: |
-          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
-          $npmGlobalDir = "$rdpUserHome\.npm-global"
-          
-          Write-Host "Configuring NPM for rdpuser: $rdpUserHome"
-          
-          New-Item -ItemType Directory -Path $npmGlobalDir -Force | Out-Null
-          
-          $env:NPM_CONFIG_PREFIX = $npmGlobalDir
-          $env:PATH = "$npmGlobalDir;$env:PATH"
-          
-          Write-Host "NPM version: $(npm --version)"
-          Write-Host "NPM prefix: $(npm config get prefix)"
 
       - name: Install OpenClaw
         shell: pwsh
@@ -403,13 +326,10 @@ jobs:
           if (-not $cacheWorking) {
             Write-Host "Installing openclaw@latest fresh..."
             npm install -g openclaw@latest
-            Write-Host "OpenClaw installed fresh"
           }
           
           $null = cmd /c "icacls `"$rdpUserHome\.npm-global`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
-          
-          Write-Host "OpenClaw ready"
 
       - name: Configure OpenClaw
         shell: pwsh
@@ -419,13 +339,6 @@ jobs:
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           $openclawDir = "$rdpUserHome\.openclaw"
-          $openclawWorkspace = "$openclawDir\workspace"
-          
-          Write-Host "Configuring OpenClaw..."
-          
-          New-Item -ItemType Directory -Path $openclawDir -Force | Out-Null
-          New-Item -ItemType Directory -Path $openclawWorkspace -Force | Out-Null
-          New-Item -ItemType Directory -Path "$openclawDir\agents\main\agent" -Force | Out-Null
           
           # Inject openclaw.json from secret
           if ($env:OPENCLAW_CONFIG) {
@@ -451,11 +364,7 @@ jobs:
           
           $null = cmd /c "icacls `"$openclawDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
           $global:LASTEXITCODE = 0
-          
-          Write-Host ""
-          Write-Host "=============================================="
-          Write-Host "OpenClaw configured!"
-          Write-Host "=============================================="
+          Write-Host "OpenClaw configured"
           
       - name: Find previous workspace artifact
         id: find-artifact
@@ -466,11 +375,7 @@ jobs:
           $repo = "${{ github.repository }}"
           $currentRunId = "${{ github.run_id }}"
           
-          Write-Host "Checking for previous workspace artifact..."
-          Write-Host "Current run ID: $currentRunId"
-          
-          # Brief wait to ensure previous session's artifact upload completed
-          # (Previous session uploads artifact BEFORE triggering us, but give it a moment)
+          # Brief wait for previous session's artifact upload
           $maxWaitMinutes = 2
           $waitedMinutes = 0
           
@@ -479,7 +384,7 @@ jobs:
             $otherInProgress = $inProgressRuns | Where-Object { $_.databaseId -ne [int64]$currentRunId }
             
             if ($otherInProgress -and $otherInProgress.Count -gt 0) {
-              Write-Host "Previous session still running (run $($otherInProgress[0].databaseId)), waiting briefly..."
+              Write-Host "Previous session still running, waiting..."
               Start-Sleep -Seconds 30
               $waitedMinutes += 0.5
             } else {
@@ -491,7 +396,7 @@ jobs:
           $result = gh api "repos/$repo/actions/artifacts" --jq '[.artifacts[] | select(.name == "openclaw-workspace" and .expired == false)] | first | {id: .id, run_id: .workflow_run.id}' 2>$null | ConvertFrom-Json
           
           if ($result -and $result.id) {
-            Write-Host "Found workspace artifact ID: $($result.id) from run: $($result.run_id)"
+            Write-Host "Found workspace artifact from run: $($result.run_id)"
             echo "RUN_ID=$($result.run_id)" >> $env:GITHUB_OUTPUT
             echo "FOUND=true" >> $env:GITHUB_OUTPUT
           } else {
@@ -509,19 +414,6 @@ jobs:
           run-id: ${{ steps.find-artifact.outputs.RUN_ID }}
         continue-on-error: true
 
-      - name: Set workspace permissions
-        shell: pwsh
-        run: |
-          $workspaceDir = "C:\Users\rdpuser\.openclaw\workspace"
-          if (Test-Path $workspaceDir) {
-            Write-Host "Workspace restored, setting permissions..."
-          } else {
-            Write-Host "No workspace restored, creating empty directory..."
-            New-Item -ItemType Directory -Path $workspaceDir -Force | Out-Null
-          }
-          $null = cmd /c "icacls `"$workspaceDir`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
-          $global:LASTEXITCODE = 0
-          
       - name: Start OpenClaw gateway
         shell: pwsh
         env:
@@ -529,8 +421,6 @@ jobs:
         run: |
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           $password = $env:RDP_PASSWORD
-          
-          Write-Host "Setting up OpenClaw gateway auto-start..."
           
           # Create startup script
           $scriptContent = '$env:PATH = "C:\Users\rdpuser\.npm-global;" + $env:PATH' + "`r`n"
@@ -549,16 +439,13 @@ jobs:
           schtasks /Create /TN $taskName /TR $batchPath /SC ONSTART /RU "rdpuser" /RP $password /RL HIGHEST /F
           
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Scheduled task '$taskName' created - runs at system startup"
-            # Run it now
             schtasks /Run /TN $taskName
-            Write-Host "Scheduled task started"
+            Write-Host "OpenClaw gateway scheduled task created and started"
           } else {
             Write-Host "WARNING: Could not create scheduled task"
           }
 
       - name: Display Connection Info
-        id: connection
         shell: pwsh
         run: |
           $tailscaleIp = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
@@ -588,6 +475,11 @@ jobs:
           Write-Host "  Config: $rdpUserHome\.openclaw\openclaw.json"
           Write-Host "  Workspace: $rdpUserHome\.openclaw\workspace"
           Write-Host "  Start: openclaw gateway"
+          Write-Host "  Cache version: ${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}"
+          Write-Host ""
+          Write-Host "Upgrade openclaw:"
+          Write-Host "  Cancel this workflow from GitHub Actions UI"
+          Write-Host "  (auto-saves workspace, toggles cache version, triggers new session)"
           Write-Host ""
           Write-Host "User directories:"
           Write-Host "  $rdpUserHome\projects"
@@ -597,6 +489,7 @@ jobs:
           Write-Host "=============================================="
 
       - name: Keep session alive (phase 1 - until chain trigger)
+        id: keepalive
         shell: pwsh
         run: |
           # Calculate end time from JOB START, not from now.
@@ -615,6 +508,7 @@ jobs:
           Write-Host "  Setup took:        $setupElapsed min"
           Write-Host "  Chain trigger at:  $($endTime.ToString('HH:mm:ss')) ($chainMinutes min from job start)"
           Write-Host "  Remaining:         $remainingMinutes min"
+          Write-Host "  Upgrade openclaw:  Cancel workflow from GitHub Actions UI"
           
           if ((Get-Date) -ge $endTime) {
             Write-Host "WARNING: Setup took longer than chain window! Proceeding to chain immediately."
@@ -640,35 +534,27 @@ jobs:
           Write-Host "Phase 1 complete - proceeding to save and chain"
 
       - name: Save secrets before chain
+        if: always()
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           $rdpUserHome = "C:\Users\rdpuser"
-          $openclawDir = "$rdpUserHome\.openclaw"
           $repo = "${{ github.repository }}"
-          
-          Write-Host "Saving OpenClaw configs to GitHub secrets..."
-          
-          $configFile = "$openclawDir\openclaw.json"
-          $authFile = "$openclawDir\agents\main\agent\auth-profiles.json"
+          $configFile = "$rdpUserHome\.openclaw\openclaw.json"
+          $authFile = "$rdpUserHome\.openclaw\agents\main\agent\auth-profiles.json"
           
           if (Test-Path $configFile) {
-            Write-Host "  Updating OPENCLAW_CONFIG secret..."
             Get-Content $configFile -Raw | gh secret set OPENCLAW_CONFIG --repo $repo
-            Write-Host "  OPENCLAW_CONFIG updated"
           }
-          
           if (Test-Path $authFile) {
-            Write-Host "  Updating OPENCLAW_AUTH_PROFILES secret..."
             Get-Content $authFile -Raw | gh secret set OPENCLAW_AUTH_PROFILES --repo $repo
-            Write-Host "  OPENCLAW_AUTH_PROFILES updated"
           }
-          
-          Write-Host "Secrets saved!"
+          Write-Host "Secrets saved"
         continue-on-error: true
 
       - name: Clean workspace before upload
+        if: always()
         shell: pwsh
         run: |
           $workspace = "C:\Users\rdpuser\.openclaw\workspace"
@@ -680,18 +566,10 @@ jobs:
           
           Write-Host "Cleaning transient/large files from workspace before upload..."
           
-          # Remove known transient directories (downloads, temp, cache, etc.)
-          $transientDirs = @(
-            "downloads", "*/downloads",
-            "temp", "*/temp", "*/tmp",
-            "cache", "*/cache", "*/.cache",
-            "node_modules", "*/node_modules",
-            "__pycache__", "*/__pycache__",
-            ".venv", "*/.venv",
-            "venv", "*/venv"
-          )
-          foreach ($pattern in $transientDirs) {
-            Get-ChildItem -Path $workspace -Directory -Recurse -Filter ($pattern.Split("/")[-1]) -ErrorAction SilentlyContinue | ForEach-Object {
+          # Remove known transient directories
+          $transientNames = @("downloads", "temp", "tmp", "cache", ".cache", "node_modules", "__pycache__", ".venv", "venv")
+          foreach ($name in $transientNames) {
+            Get-ChildItem -Path $workspace -Directory -Recurse -Filter $name -ErrorAction SilentlyContinue | ForEach-Object {
               Write-Host "  Removing dir: $($_.FullName)"
               Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
             }
@@ -742,6 +620,7 @@ jobs:
           Write-Host "Workspace ready for upload: $fileCount files, ${sizeMB} MB"
 
       - name: Upload workspace artifact (for next session)
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: openclaw-workspace
@@ -751,6 +630,7 @@ jobs:
           overwrite: true
 
       - name: Trigger next session
+        if: always()
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -759,6 +639,23 @@ jobs:
           $nextChainCount = [int]"${{ steps.session.outputs.CHAIN_COUNT }}" + 1
           $openclawCacheVersion = "${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}"
           $repo = "${{ github.repository }}"
+          
+          # If workflow was cancelled, toggle version to force openclaw upgrade
+          $keepaliveOutcome = "${{ steps.keepalive.outcome }}"
+          if ($keepaliveOutcome -eq "cancelled") {
+            # Toggle between v1 and v2
+            if ($openclawCacheVersion -eq "v1") {
+              $newVersion = "v2"
+            } else {
+              $newVersion = "v1"
+            }
+            Write-Host "=========================================="
+            Write-Host "CANCEL DETECTED - UPGRADING OPENCLAW"
+            Write-Host "  Previous cache version: $openclawCacheVersion"
+            Write-Host "  New cache version:      $newVersion"
+            Write-Host "=========================================="
+            $openclawCacheVersion = $newVersion
+          }
           
           Write-Host "Triggering next session (chain count: $nextChainCount, openclaw cache: $openclawCacheVersion)..."
           
@@ -794,6 +691,7 @@ jobs:
           }
 
       - name: Keep session alive (phase 2 - until timeout)
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           $rdpUserHome = "C:\Users\rdpuser"
