@@ -11,6 +11,10 @@ on:
         description: 'Chain iteration counter'
         required: false
         default: '0'
+      openclaw_cache_version:
+        description: 'Bump to force openclaw upgrade (e.g. v1 -> v2)'
+        required: false
+        default: 'v1'
   repository_dispatch:
     types: [chain-rdp]
 
@@ -26,36 +30,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-
-      # ========== DEPENDENCY CACHING ==========
-      # NOTE: Chocolatey caching removed intentionally. windows-latest already has
-      # Git, Node.js, Python pre-installed. Chocolatey installs register in the
-      # Windows registry which is NOT cached by actions/cache, causing restored
-      # files to be non-functional (broken shims, missing PATH entries, etc.).
-      # Installing the few missing tools fresh each time (~2-3 min) is more reliable.
-
-      - name: Cache Tailscale installer
-        id: cache-tailscale
-        uses: actions/cache@v4
-        with:
-          path: C:\tailscale-cache
-          key: tailscale-v1-${{ runner.os }}
-
-      - name: Get current date for cache key
-        id: date
-        shell: pwsh
-        run: |
-          $today = (Get-Date).ToString("yyyy-MM-dd")
-          echo "TODAY=$today" >> $env:GITHUB_OUTPUT
-
-      - name: Cache npm global packages (daily)
-        id: cache-npm-global
-        uses: actions/cache@v4
-        with:
-          path: C:\Users\rdpuser\.npm-global
-          key: npm-global-openclaw-v1-${{ runner.os }}-${{ steps.date.outputs.TODAY }}
-          restore-keys: |
-            npm-global-openclaw-v1-${{ runner.os }}-
 
       - name: Generate session info
         id: session
@@ -73,11 +47,22 @@ jobs:
             $chainCount = [int]$chainCountInput
           }
           
+          # Resolve openclaw cache version (from input or chained payload)
+          $openclawCacheVersion = "${{ github.event.inputs.openclaw_cache_version }}"
+          
           if ("${{ github.event_name }}" -eq "repository_dispatch") {
             $payloadCount = "${{ github.event.client_payload.chain_count }}"
             if (-not [string]::IsNullOrEmpty($payloadCount)) {
               $chainCount = [int]$payloadCount
             }
+            $payloadCacheVersion = "${{ github.event.client_payload.openclaw_cache_version }}"
+            if (-not [string]::IsNullOrEmpty($payloadCacheVersion)) {
+              $openclawCacheVersion = $payloadCacheVersion
+            }
+          }
+          
+          if ([string]::IsNullOrEmpty($openclawCacheVersion)) {
+            $openclawCacheVersion = "v1"
           }
           
           # Record job start time as ticks for accurate timeout calculation later
@@ -85,12 +70,35 @@ jobs:
           
           echo "SESSION_ID=$sessionId" >> $env:GITHUB_OUTPUT
           echo "CHAIN_COUNT=$chainCount" >> $env:GITHUB_OUTPUT
+          echo "OPENCLAW_CACHE_VERSION=$openclawCacheVersion" >> $env:GITHUB_OUTPUT
           echo "JOB_START_TICKS=$jobStartTicks" >> $env:GITHUB_OUTPUT
           echo "START_TIME=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')" >> $env:GITHUB_OUTPUT
           
           Write-Host "Session ID: $sessionId"
           Write-Host "Chain iteration: $chainCount"
+          Write-Host "OpenClaw cache version: $openclawCacheVersion"
           Write-Host "Job start ticks: $jobStartTicks"
+
+      # ========== DEPENDENCY CACHING ==========
+      # NOTE: Chocolatey caching removed intentionally. windows-latest already has
+      # Git, Node.js, Python pre-installed. Chocolatey installs register in the
+      # Windows registry which is NOT cached by actions/cache, causing restored
+      # files to be non-functional (broken shims, missing PATH entries, etc.).
+      # Installing the few missing tools fresh each time (~2-3 min) is more reliable.
+
+      - name: Cache Tailscale installer
+        id: cache-tailscale
+        uses: actions/cache@v4
+        with:
+          path: C:\tailscale-cache
+          key: tailscale-v1-${{ runner.os }}
+
+      - name: Cache npm global packages
+        id: cache-npm-global
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\rdpuser\.npm-global
+          key: npm-global-openclaw-${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}-${{ runner.os }}
 
       # ========== TAILSCALE SETUP ==========
       - name: Install Tailscale
@@ -389,7 +397,7 @@ jobs:
               Write-Host "WARNING: Cache hit but openclaw binary not found at $openclawBin"
             }
           } else {
-            Write-Host "No npm cache hit"
+            Write-Host "No npm cache hit (version: ${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }})"
           }
           
           if (-not $cacheWorking) {
@@ -749,15 +757,17 @@ jobs:
         run: |
           $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
           $nextChainCount = [int]"${{ steps.session.outputs.CHAIN_COUNT }}" + 1
+          $openclawCacheVersion = "${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}"
           $repo = "${{ github.repository }}"
           
-          Write-Host "Triggering next session (chain count: $nextChainCount)..."
+          Write-Host "Triggering next session (chain count: $nextChainCount, openclaw cache: $openclawCacheVersion)..."
           
           $body = @{
             event_type = 'chain-rdp'
             client_payload = @{
               session_id = $sessionId
               chain_count = $nextChainCount
+              openclaw_cache_version = $openclawCacheVersion
             }
           } | ConvertTo-Json -Compress
           
