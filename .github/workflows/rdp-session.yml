@@ -19,8 +19,8 @@ on:
     types: [chain-rdp]
 
 env:
-  SESSION_TIMEOUT_MINUTES: 355  # Close to 6 hour GitHub limit
-  CHAIN_BUFFER_MINUTES: 10     # Start new session 10 min before timeout (cached setup takes ~3-5 min)
+  CHAIN_TRIGGER_MINUTES: 325   # Fire chain dispatch at this many minutes from job start
+  SAVE_INTERVAL_MINUTES: 60    # Periodic secret saves during keepalive
 
 jobs:
   rdp-session:
@@ -485,55 +485,158 @@ jobs:
           Write-Host "  $rdpUserHome\projects"
           Write-Host "  $rdpUserHome\.npm-global"
           Write-Host ""
-          Write-Host "Session will auto-chain in ~${{ env.SESSION_TIMEOUT_MINUTES }} minutes"
+          Write-Host "Session will auto-chain at ~${{ env.CHAIN_TRIGGER_MINUTES }} minutes"
           Write-Host "=============================================="
 
       - name: Keep session alive (phase 1 - until chain trigger)
         id: keepalive
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Calculate end time from JOB START, not from now.
+          # Calculate times from JOB START, not from now.
           # Phase 1 starts after setup (~5-20 min), so using (Get-Date) here
           # would overshoot the 360-min GitHub limit and get killed before chaining.
           $jobStart = [DateTime]::new([long]"${{ steps.session.outputs.JOB_START_TICKS }}")
-          $chainMinutes = ${{ env.SESSION_TIMEOUT_MINUTES }} - ${{ env.CHAIN_BUFFER_MINUTES }}
-          $endTime = $jobStart.AddMinutes($chainMinutes)
+          $chainTime = $jobStart.AddMinutes(${{ env.CHAIN_TRIGGER_MINUTES }})
+          $hardLimitTime = $jobStart.AddMinutes(350)  # Stop 10 min before GitHub 360 limit, leaving room for fallback steps
+          $saveInterval = ${{ env.SAVE_INTERVAL_MINUTES }}
           $rdpUserHome = "C:\Users\rdpuser"
+          $repo = "${{ github.repository }}"
+          $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
+          $chainCount = [int]"${{ steps.session.outputs.CHAIN_COUNT }}"
+          $openclawCacheVersion = "${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}"
           
           $setupElapsed = [math]::Round(((Get-Date) - $jobStart).TotalMinutes, 1)
-          $remainingMinutes = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
+          $remainingMinutes = [math]::Round(($chainTime - (Get-Date)).TotalMinutes, 1)
           
           Write-Host "Phase 1: Keep alive until chain trigger"
           Write-Host "  Job started:       $($jobStart.ToString('HH:mm:ss'))"
           Write-Host "  Setup took:        $setupElapsed min"
-          Write-Host "  Chain trigger at:  $($endTime.ToString('HH:mm:ss')) ($chainMinutes min from job start)"
+          Write-Host "  Chain trigger at:  $($chainTime.ToString('HH:mm:ss')) (${{ env.CHAIN_TRIGGER_MINUTES }} min from job start)"
+          Write-Host "  Hard limit at:     $($hardLimitTime.ToString('HH:mm:ss')) (350 min from job start)"
           Write-Host "  Remaining:         $remainingMinutes min"
+          Write-Host "  Save interval:     every $saveInterval min"
           Write-Host "  Upgrade openclaw:  Cancel workflow from GitHub Actions UI"
           
-          if ((Get-Date) -ge $endTime) {
+          if ((Get-Date) -ge $chainTime) {
             Write-Host "WARNING: Setup took longer than chain window! Proceeding to chain immediately."
           }
           
-          # Keep alive loop - also checks and restarts OpenClaw every 5 minutes
-          while ((Get-Date) -lt $endTime) {
-            $left = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 1)
-            Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss') ($left min until chain)..."
+          # Track state
+          $lastSaveTime = Get-Date
+          $chainTriggered = $false
+          
+          # Helper: save secrets to GitHub
+          function Save-Secrets {
+            $configFile = "$rdpUserHome\.openclaw\openclaw.json"
+            $authFile = "$rdpUserHome\.openclaw\agents\main\agent\auth-profiles.json"
+            try {
+              if (Test-Path $configFile) {
+                Get-Content $configFile -Raw | gh secret set OPENCLAW_CONFIG --repo $repo 2>&1 | Out-Null
+              }
+              if (Test-Path $authFile) {
+                Get-Content $authFile -Raw | gh secret set OPENCLAW_AUTH_PROFILES --repo $repo 2>&1 | Out-Null
+              }
+              Write-Host "  [SAVE] Secrets saved at $(Get-Date -Format 'HH:mm:ss')"
+            } catch {
+              Write-Host "  [SAVE] WARNING: Secret save failed: $_"
+            }
+          }
+          
+          # Helper: trigger next session
+          function Trigger-Chain {
+            $nextChainCount = $chainCount + 1
+            Write-Host "  [CHAIN] Triggering next session (chain: $nextChainCount, cache: $openclawCacheVersion)..."
+            
+            $body = @{
+              event_type = 'chain-rdp'
+              client_payload = @{
+                session_id = $sessionId
+                chain_count = $nextChainCount
+                openclaw_cache_version = $openclawCacheVersion
+              }
+            } | ConvertTo-Json -Compress
+            
+            $maxRetries = 3
+            for ($i = 1; $i -le $maxRetries; $i++) {
+              try {
+                $body | gh api "repos/$repo/dispatches" --method POST --input -
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "  [CHAIN] Next session triggered on attempt $i"
+                  return $true
+                }
+                Write-Host "  [CHAIN] WARNING: gh api exit code $LASTEXITCODE (attempt $i/$maxRetries)"
+              } catch {
+                Write-Host "  [CHAIN] WARNING: Exception attempt $i/$maxRetries - $_"
+              }
+              if ($i -lt $maxRetries) {
+                Start-Sleep -Seconds ($i * 10)
+              }
+            }
+            Write-Host "  [CHAIN] ERROR: All $maxRetries attempts failed!"
+            return $false
+          }
+          
+          # Main keep-alive loop: runs from setup completion until hard limit
+          # At chainTime: saves secrets + triggers next session, then continues as phase 2
+          while ((Get-Date) -lt $hardLimitTime) {
+            $elapsed = [math]::Round(((Get-Date) - $jobStart).TotalMinutes, 1)
+            
+            if (-not $chainTriggered) {
+              $left = [math]::Round(($chainTime - (Get-Date)).TotalMinutes, 1)
+              Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss') | ${elapsed}min elapsed | ${left}min until chain"
+            } else {
+              $left = [math]::Round(($hardLimitTime - (Get-Date)).TotalMinutes, 1)
+              Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss') | ${elapsed}min elapsed | ${left}min until hard limit (chained)"
+            }
             
             # Check if OpenClaw is running, restart if not
             $nodeProcs = Get-Process -Name "node" -ErrorAction SilentlyContinue
             if (-not $nodeProcs) {
-              Write-Host "OpenClaw not running, restarting..."
+              Write-Host "  OpenClaw not running, restarting..."
               $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
               Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "$rdpUserHome\.openclaw"
-              Write-Host "OpenClaw restarted"
+              Write-Host "  OpenClaw restarted"
             }
             
-            Start-Sleep -Seconds 300
+            # Periodic secret save
+            $sinceLastSave = ((Get-Date) - $lastSaveTime).TotalMinutes
+            if ($sinceLastSave -ge $saveInterval) {
+              Save-Secrets
+              $lastSaveTime = Get-Date
+            }
+            
+            # Chain trigger: fire once when we reach chain time
+            if (-not $chainTriggered -and (Get-Date) -ge $chainTime) {
+              Write-Host ""
+              Write-Host "=========================================="
+              Write-Host "  CHAIN TIME - saving and triggering"
+              Write-Host "=========================================="
+              Save-Secrets
+              $chainTriggered = Trigger-Chain
+              if ($chainTriggered) {
+                # Write marker so if: always() steps know chain was already done
+                echo "CHAIN_DONE=true" >> $env:GITHUB_OUTPUT
+                Write-Host "Chain triggered successfully - continuing as phase 2 until hard limit"
+              } else {
+                Write-Host "WARNING: Chain trigger failed - will retry via if:always() steps"
+              }
+              Write-Host "=========================================="
+              Write-Host ""
+            }
+            
+            Start-Sleep -Seconds 60
           }
           
-          Write-Host "Phase 1 complete - proceeding to save and chain"
+          # Final save before exiting
+          Write-Host "Hard limit reached - final secret save"
+          Save-Secrets
+          if (-not $chainTriggered) {
+            echo "CHAIN_DONE=false" >> $env:GITHUB_OUTPUT
+          }
 
-      - name: Save secrets before chain
+      - name: Save secrets (fallback)
         if: always()
         shell: pwsh
         env:
@@ -544,13 +647,18 @@ jobs:
           $configFile = "$rdpUserHome\.openclaw\openclaw.json"
           $authFile = "$rdpUserHome\.openclaw\agents\main\agent\auth-profiles.json"
           
-          if (Test-Path $configFile) {
-            Get-Content $configFile -Raw | gh secret set OPENCLAW_CONFIG --repo $repo
+          Write-Host "Fallback secret save (in case keepalive was interrupted)..."
+          try {
+            if (Test-Path $configFile) {
+              Get-Content $configFile -Raw | gh secret set OPENCLAW_CONFIG --repo $repo
+            }
+            if (Test-Path $authFile) {
+              Get-Content $authFile -Raw | gh secret set OPENCLAW_AUTH_PROFILES --repo $repo
+            }
+            Write-Host "Secrets saved"
+          } catch {
+            Write-Host "WARNING: Secret save failed: $_"
           }
-          if (Test-Path $authFile) {
-            Get-Content $authFile -Raw | gh secret set OPENCLAW_AUTH_PROFILES --repo $repo
-          }
-          Write-Host "Secrets saved"
         continue-on-error: true
 
       - name: Clean workspace before upload
@@ -629,12 +737,21 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
 
-      - name: Trigger next session
+      - name: Trigger next session (fallback)
         if: always()
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
+          # Skip if keepalive already triggered the chain successfully
+          $chainDone = "${{ steps.keepalive.outputs.CHAIN_DONE }}"
+          if ($chainDone -eq "true") {
+            Write-Host "Chain already triggered by keepalive loop - skipping fallback"
+            exit 0
+          }
+          
+          Write-Host "Fallback chain trigger (keepalive did not complete chain)..."
+          
           $sessionId = "${{ steps.session.outputs.SESSION_ID }}"
           $nextChainCount = [int]"${{ steps.session.outputs.CHAIN_COUNT }}" + 1
           $openclawCacheVersion = "${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}"
@@ -643,7 +760,6 @@ jobs:
           # If workflow was cancelled, toggle version to force openclaw upgrade
           $keepaliveOutcome = "${{ steps.keepalive.outcome }}"
           if ($keepaliveOutcome -eq "cancelled") {
-            # Toggle between v1 and v2
             if ($openclawCacheVersion -eq "v1") {
               $newVersion = "v2"
             } else {
@@ -668,7 +784,6 @@ jobs:
             }
           } | ConvertTo-Json -Compress
           
-          # Retry up to 3 times with backoff
           $maxRetries = 3
           for ($i = 1; $i -le $maxRetries; $i++) {
             try {
@@ -692,8 +807,8 @@ jobs:
 
       # ========== EXPLICIT CACHE SAVE ==========
       # actions/cache/restore does not register a post-hook, so we must save
-      # explicitly. This runs before the infinite phase-2 loop to guarantee
-      # caches are persisted even when GitHub kills the job at 360 min.
+      # explicitly. These are fallback saves - the keepalive loop handles
+      # chain triggering and secret saves inline.
 
       - name: Save Tailscale installer cache
         if: ${{ always() && steps.cache-tailscale.outputs.cache-hit != 'true' }}
@@ -709,27 +824,3 @@ jobs:
           path: C:\Users\rdpuser\.npm-global
           key: npm-global-openclaw-${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}-${{ runner.os }}
 
-      - name: Keep session alive (phase 2 - until timeout)
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: |
-          $rdpUserHome = "C:\Users\rdpuser"
-          
-          Write-Host "Phase 2: Continuing until job timeout"
-          Write-Host "Next session is already running with fresh artifact"
-          Write-Host "You can continue working until GitHub terminates this job"
-          
-          # Run indefinitely - GitHub will kill us at 360 min
-          while ($true) {
-            Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss')..."
-            
-            $nodeProcs = Get-Process -Name "node" -ErrorAction SilentlyContinue
-            if (-not $nodeProcs) {
-              Write-Host "OpenClaw not running, restarting..."
-              $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
-              Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "$rdpUserHome\.openclaw"
-              Write-Host "OpenClaw restarted"
-            }
-            
-            Start-Sleep -Seconds 300
-          }
