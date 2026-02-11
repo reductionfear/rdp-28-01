@@ -591,6 +591,17 @@ jobs:
               Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss') | ${elapsed}min elapsed | ${left}min until hard limit (chained)"
             }
             
+            # Check for manual restart request (touch-file trigger)
+            $restartFlag = "$rdpUserHome\.openclaw\.restart"
+            if (Test-Path $restartFlag) {
+              Write-Host "  Restart flag detected - killing OpenClaw..."
+              Remove-Item $restartFlag -Force -ErrorAction SilentlyContinue
+              taskkill /F /IM node.exe 2>$null
+              Start-Sleep -Seconds 2
+              # Reset fail counter so it gets a fresh start below
+              $script:openclawFailCount = 0
+            }
+            
             # Check if OpenClaw is running, restart if not (with backoff and error capture)
             $nodeProcs = Get-Process -Name "node" -ErrorAction SilentlyContinue
             if (-not $nodeProcs) {
