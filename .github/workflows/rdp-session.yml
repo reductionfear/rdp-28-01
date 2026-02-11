@@ -422,9 +422,10 @@ jobs:
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           $password = $env:RDP_PASSWORD
           
-          # Create startup script
+          # Create startup script (with stderr capture for crash diagnosis)
           $scriptContent = '$env:PATH = "C:\Users\rdpuser\.npm-global;" + $env:PATH' + "`r`n"
-          $scriptContent += 'Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "C:\Users\rdpuser\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "C:\Users\rdpuser\.openclaw"'
+          $scriptContent += '$logFile = "C:\Users\rdpuser\.openclaw\gateway-crash.log"' + "`r`n"
+          $scriptContent += 'Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "C:\Users\rdpuser\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "C:\Users\rdpuser\.openclaw" -RedirectStandardError $logFile'
           $scriptPath = "$rdpUserHome\start-openclaw.ps1"
           $scriptContent | Out-File -FilePath $scriptPath -Encoding UTF8
           
@@ -609,22 +610,17 @@ jobs:
               $script:openclawFailCount++
               
               if ($script:openclawFailCount -le 5) {
-                Write-Host "  OpenClaw not running (attempt $($script:openclawFailCount)), restarting..."
-                $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+                Write-Host "  OpenClaw not running (attempt $($script:openclawFailCount)/5), restarting via scheduled task..."
                 
-                # Start with output capture so we can see crash reasons
-                $logFile = "$rdpUserHome\.openclaw\gateway-crash.log"
-                $ocScript = "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs"
-                Start-Process -FilePath "node" -ArgumentList $ocScript, "gateway" -WorkingDirectory "$rdpUserHome\.openclaw" -WindowStyle Hidden -RedirectStandardError $logFile
+                # Restart using the scheduled task so it runs as rdpuser (not the runner service account)
+                schtasks /Run /TN "OpenClawGateway" 2>$null
                 
-                # Wait a few seconds and check if it stayed alive
-                Start-Sleep -Seconds 5
+                # Wait and check if it stayed alive (15s to catch init crashes)
+                Start-Sleep -Seconds 15
                 $stillRunning = Get-Process -Name "node" -ErrorAction SilentlyContinue
-                if ($stillRunning) {
-                  Write-Host "  OpenClaw restarted successfully"
-                  $script:openclawFailCount = 0
-                } else {
-                  Write-Host "  OpenClaw crashed immediately after restart!"
+                if (-not $stillRunning) {
+                  Write-Host "  OpenClaw crashed within 15s of restart!"
+                  $logFile = "$rdpUserHome\.openclaw\gateway-crash.log"
                   if (Test-Path $logFile) {
                     $crashLog = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
                     if ($crashLog) {
@@ -633,6 +629,8 @@ jobs:
                       Write-Host "  --- end crash log ---"
                     }
                   }
+                } else {
+                  Write-Host "  OpenClaw process started (will confirm on next cycle)"
                 }
               } elseif ($script:openclawFailCount -eq 6) {
                 Write-Host "  OpenClaw failed 5 consecutive restarts - giving up automatic restarts."
@@ -642,7 +640,10 @@ jobs:
               }
               # After giving up, silently skip (no spam every 60s)
             } else {
-              # Reset fail counter when it's running fine
+              # OpenClaw is running - reset fail counter
+              if ((Test-Path variable:script:openclawFailCount) -and $script:openclawFailCount -gt 0) {
+                Write-Host "  OpenClaw confirmed running (reset fail counter from $($script:openclawFailCount))"
+              }
               $script:openclawFailCount = 0
             }
             
