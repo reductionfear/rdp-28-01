@@ -816,6 +816,7 @@ jobs:
         with:
           path: C:\tailscale-cache
           key: tailscale-v1-${{ runner.os }}
+        continue-on-error: true
 
       - name: Save npm global packages cache
         if: ${{ always() && steps.cache-npm-global.outputs.cache-hit != 'true' }}
@@ -823,4 +824,5 @@ jobs:
         with:
           path: C:\Users\rdpuser\.npm-global
           key: npm-global-openclaw-${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}-${{ runner.os }}
+        continue-on-error: true
 
