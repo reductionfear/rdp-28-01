@@ -376,7 +376,7 @@ jobs:
           $currentRunId = "${{ github.run_id }}"
           
           # Brief wait for previous session's artifact upload
-          $maxWaitMinutes = 20
+          $maxWaitMinutes = 30
           $waitedMinutes = 0
           
           while ($waitedMinutes -lt $maxWaitMinutes) {
