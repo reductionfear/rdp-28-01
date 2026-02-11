@@ -591,13 +591,48 @@ jobs:
               Write-Host "Session alive at $(Get-Date -Format 'HH:mm:ss') | ${elapsed}min elapsed | ${left}min until hard limit (chained)"
             }
             
-            # Check if OpenClaw is running, restart if not
+            # Check if OpenClaw is running, restart if not (with backoff and error capture)
             $nodeProcs = Get-Process -Name "node" -ErrorAction SilentlyContinue
             if (-not $nodeProcs) {
-              Write-Host "  OpenClaw not running, restarting..."
-              $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
-              Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "$rdpUserHome\.openclaw"
-              Write-Host "  OpenClaw restarted"
+              if (-not (Test-Path variable:script:openclawFailCount)) { $script:openclawFailCount = 0 }
+              $script:openclawFailCount++
+              
+              if ($script:openclawFailCount -le 5) {
+                Write-Host "  OpenClaw not running (attempt $($script:openclawFailCount)), restarting..."
+                $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+                
+                # Start with output capture so we can see crash reasons
+                $logFile = "$rdpUserHome\.openclaw\gateway-crash.log"
+                $ocScript = "$rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs"
+                Start-Process -FilePath "node" -ArgumentList $ocScript, "gateway" -WorkingDirectory "$rdpUserHome\.openclaw" -WindowStyle Hidden -RedirectStandardError $logFile
+                
+                # Wait a few seconds and check if it stayed alive
+                Start-Sleep -Seconds 5
+                $stillRunning = Get-Process -Name "node" -ErrorAction SilentlyContinue
+                if ($stillRunning) {
+                  Write-Host "  OpenClaw restarted successfully"
+                  $script:openclawFailCount = 0
+                } else {
+                  Write-Host "  OpenClaw crashed immediately after restart!"
+                  if (Test-Path $logFile) {
+                    $crashLog = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+                    if ($crashLog) {
+                      Write-Host "  --- crash log (last 500 chars) ---"
+                      Write-Host ("  " + $crashLog.Substring([Math]::Max(0, $crashLog.Length - 500)))
+                      Write-Host "  --- end crash log ---"
+                    }
+                  }
+                }
+              } elseif ($script:openclawFailCount -eq 6) {
+                Write-Host "  OpenClaw failed 5 consecutive restarts - giving up automatic restarts."
+                Write-Host "  RDP in and check config at: $rdpUserHome\.openclaw\openclaw.json"
+                Write-Host "  Run manually: node $rdpUserHome\.npm-global\node_modules\openclaw\openclaw.mjs gateway"
+                Write-Host "  Crash log: $rdpUserHome\.openclaw\gateway-crash.log"
+              }
+              # After giving up, silently skip (no spam every 60s)
+            } else {
+              # Reset fail counter when it's running fine
+              $script:openclawFailCount = 0
             }
             
             # Periodic secret save
