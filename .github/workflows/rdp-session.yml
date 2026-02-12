@@ -19,7 +19,7 @@ on:
     types: [chain-rdp]
 
 env:
-  CHAIN_TRIGGER_MINUTES: 325   # Fire chain dispatch at this many minutes from job start
+  CHAIN_TRIGGER_MINUTES: 340   # Fire chain dispatch at this many minutes from job start
   SAVE_INTERVAL_MINUTES: 60    # Periodic secret saves during keepalive
 
 jobs:
@@ -376,7 +376,7 @@ jobs:
           $currentRunId = "${{ github.run_id }}"
           
           # Brief wait for previous session's artifact upload
-          $maxWaitMinutes = 30
+          $maxWaitMinutes = 10
           $waitedMinutes = 0
           
           while ($waitedMinutes -lt $maxWaitMinutes) {
