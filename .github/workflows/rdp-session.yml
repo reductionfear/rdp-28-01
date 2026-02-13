@@ -19,7 +19,7 @@ on:
     types: [chain-rdp]
 
 env:
-  CHAIN_TRIGGER_MINUTES: 340   # Fire chain dispatch at this many minutes from job start
+  CHAIN_TRIGGER_MINUTES: 325   # Fire chain dispatch at this many minutes from job start
   SAVE_INTERVAL_MINUTES: 60    # Periodic secret saves during keepalive
 
 jobs:
@@ -376,7 +376,7 @@ jobs:
           $currentRunId = "${{ github.run_id }}"
           
           # Brief wait for previous session's artifact upload
-          $maxWaitMinutes = 10
+          $maxWaitMinutes = 2
           $waitedMinutes = 0
           
           while ($waitedMinutes -lt $maxWaitMinutes) {
@@ -527,6 +527,10 @@ jobs:
           # Track state
           $lastSaveTime = Get-Date
           $chainTriggered = $false
+          $loopCount = 0
+          # GC interval: force garbage collection every 30 iterations (~30 min)
+          # to prevent PowerShell memory accumulation over 5+ hour sessions
+          $gcInterval = 30
           
           # Helper: save secrets to GitHub
           function Save-Secrets {
@@ -579,9 +583,29 @@ jobs:
             return $false
           }
           
+          # Helper: log memory diagnostics (lightweight, only on GC cycles)
+          function Log-MemoryDiag {
+            try {
+              $os = Get-CimInstance -ClassName Win32_OperatingSystem
+              $totalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+              $freeGB = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
+              $usedGB = [math]::Round($totalGB - $freeGB, 1)
+              $pct = [math]::Round(($usedGB / $totalGB) * 100, 0)
+              Write-Host "  [MEM] ${usedGB}/${totalGB} GB used (${pct}%)"
+              
+              # Warn if memory is critically low (runner agent needs RAM for heartbeats)
+              if ($pct -gt 90) {
+                Write-Host "  [MEM] WARNING: Memory usage above 90% - runner agent may lose heartbeat!"
+              }
+            } catch {
+              # Non-critical, swallow errors
+            }
+          }
+          
           # Main keep-alive loop: runs from setup completion until hard limit
           # At chainTime: saves secrets + triggers next session, then continues as phase 2
           while ((Get-Date) -lt $hardLimitTime) {
+            $loopCount++
             $elapsed = [math]::Round(((Get-Date) - $jobStart).TotalMinutes, 1)
             
             if (-not $chainTriggered) {
@@ -646,6 +670,8 @@ jobs:
               }
               $script:openclawFailCount = 0
             }
+            # Release process list reference immediately
+            $nodeProcs = $null
             
             # Periodic secret save
             $sinceLastSave = ((Get-Date) - $lastSaveTime).TotalMinutes
@@ -671,6 +697,16 @@ jobs:
               }
               Write-Host "=========================================="
               Write-Host ""
+            }
+            
+            # Periodic garbage collection to prevent memory accumulation.
+            # PowerShell retains objects in its pipeline/variable tables across
+            # loop iterations. Over 350 minutes this can grow significantly,
+            # starving the runner agent of memory and causing heartbeat failures.
+            if ($loopCount % $gcInterval -eq 0) {
+              Log-MemoryDiag
+              [System.GC]::Collect()
+              [System.GC]::WaitForPendingFinalizers()
             }
             
             Start-Sleep -Seconds 60
@@ -721,7 +757,9 @@ jobs:
           
           Write-Host "Cleaning transient/large files from workspace before upload..."
           
-          # Remove known transient directories
+          # Remove known transient directories (use robocopy /MIR with empty dir for speed,
+          # falling back to Remove-Item). This avoids enumerating millions of files in
+          # node_modules etc. which can starve the runner of CPU/memory.
           $transientNames = @("downloads", "temp", "tmp", "cache", ".cache", "node_modules", "__pycache__", ".venv", "venv")
           foreach ($name in $transientNames) {
             Get-ChildItem -Path $workspace -Directory -Recurse -Filter $name -ErrorAction SilentlyContinue | ForEach-Object {
@@ -730,48 +768,63 @@ jobs:
             }
           }
           
-          # Remove large media/binary files (>50MB or known extensions)
-          $largeExtensions = @("*.mp4", "*.mkv", "*.avi", "*.mov", "*.webm", "*.mp3", "*.wav", "*.flac",
-                               "*.zip", "*.tar", "*.gz", "*.7z", "*.rar",
-                               "*.iso", "*.img", "*.exe", "*.msi",
-                               "*.bin", "*.dat", "*.psd", "*.raw")
-          foreach ($ext in $largeExtensions) {
-            Get-ChildItem -Path $workspace -Recurse -Filter $ext -File -ErrorAction SilentlyContinue | ForEach-Object {
-              Write-Host "  Removing file: $($_.FullName) ($([math]::Round($_.Length/1MB, 1)) MB)"
-              Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
-            }
-          }
+          # Single-pass file scan: remove large/binary files and check accessibility.
+          # Previous approach did 3 separate recursive scans (by extension, by size, by
+          # accessibility) which tripled IO and memory usage, risking runner heartbeat loss.
+          $largeExtSet = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase)
+          @(".mp4",".mkv",".avi",".mov",".webm",".mp3",".wav",".flac",
+            ".zip",".tar",".gz",".7z",".rar",
+            ".iso",".img",".exe",".msi",
+            ".bin",".dat",".psd",".raw") | ForEach-Object { $null = $largeExtSet.Add($_) }
           
-          # Remove any files >50MB that slipped through
-          Get-ChildItem -Path $workspace -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 50MB } | ForEach-Object {
-            Write-Host "  Removing large file: $($_.FullName) ($([math]::Round($_.Length/1MB, 1)) MB)"
-            Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
-          }
-          
-          # Remove broken symlinks and validate all files are accessible
+          $removedCount = 0
           Get-ChildItem -Path $workspace -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-            try {
-              $null = [System.IO.File]::OpenRead($_.FullName).Close()
-            } catch {
-              Write-Host "  Removing inaccessible file: $($_.FullName)"
+            $remove = $false
+            $reason = ""
+            
+            if ($largeExtSet.Contains($_.Extension)) {
+              $remove = $true
+              $reason = "extension $($_.Extension)"
+            } elseif ($_.Length -gt 50MB) {
+              $remove = $true
+              $reason = "$([math]::Round($_.Length/1MB, 1)) MB"
+            } else {
+              try {
+                $stream = [System.IO.File]::OpenRead($_.FullName)
+                $stream.Close()
+                $stream.Dispose()
+              } catch {
+                $remove = $true
+                $reason = "inaccessible"
+              }
+            }
+            
+            if ($remove) {
+              Write-Host "  Removing ($reason): $($_.FullName)"
               Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+              $removedCount++
             }
           }
           
-          # Remove empty directories left behind
-          do {
-            $emptyDirs = Get-ChildItem -Path $workspace -Directory -Recurse -ErrorAction SilentlyContinue |
-              Where-Object { @(Get-ChildItem -Path $_.FullName -Force -ErrorAction SilentlyContinue).Count -eq 0 }
-            $emptyDirs | ForEach-Object {
-              Write-Host "  Removing empty dir: $($_.FullName)"
-              Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+          if ($removedCount -gt 0) {
+            Write-Host "  Removed $removedCount files"
+          }
+          
+          # Remove empty directories left behind (single pass, deepest first)
+          Get-ChildItem -Path $workspace -Directory -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object {
+              if (@(Get-ChildItem -Path $_.FullName -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+                Write-Host "  Removing empty dir: $($_.FullName)"
+                Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+              }
             }
-          } while ($emptyDirs -and $emptyDirs.Count -gt 0)
           
           # Summary
-          $fileCount = (Get-ChildItem -Path $workspace -Recurse -File -ErrorAction SilentlyContinue).Count
-          $totalSize = (Get-ChildItem -Path $workspace -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
-          $sizeMB = [math]::Round($totalSize / 1MB, 1)
+          $stats = Get-ChildItem -Path $workspace -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
+          $fileCount = $stats.Count
+          $sizeMB = [math]::Round($stats.Sum / 1MB, 1)
           Write-Host "Workspace ready for upload: $fileCount files, ${sizeMB} MB"
 
       - name: Upload workspace artifact (for next session)
