@@ -347,6 +347,39 @@ jobs:
             $config = $config -replace 'C:\\\\Users\\\\[^\\\"]+', ($rdpUserHome -replace '\\', '\\\\')
             $config = $config -replace 'C:/Users/[^/\"]+', ($rdpUserHome -replace '\\', '/')
             
+            # Sanitize: remove unrecognized keys from model entries that crash OpenClaw
+            # (e.g. "remoteId" added by OpenClaw runtime but rejected on startup)
+            try {
+              $configObj = $config | ConvertFrom-Json
+              $sanitizedKeys = @("remoteId", "remote_id")  # Known offenders
+              $didSanitize = $false
+              
+              if ($configObj.models.providers) {
+                foreach ($providerProp in $configObj.models.providers.PSObject.Properties) {
+                  $provider = $providerProp.Value
+                  if ($provider.models -and $provider.models -is [System.Array]) {
+                    for ($i = 0; $i -lt $provider.models.Count; $i++) {
+                      $model = $provider.models[$i]
+                      foreach ($badKey in $sanitizedKeys) {
+                        if ($model.PSObject.Properties[$badKey]) {
+                          Write-Host "  SANITIZE: Removing '$badKey' from $($providerProp.Name).models[$i]"
+                          $model.PSObject.Properties.Remove($badKey)
+                          $didSanitize = $true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              
+              if ($didSanitize) {
+                $config = $configObj | ConvertTo-Json -Depth 20
+                Write-Host "  Config sanitized (removed unrecognized keys)"
+              }
+            } catch {
+              Write-Host "  WARNING: Config sanitization failed (will write as-is): $_"
+            }
+            
             $config | Out-File -FilePath "$openclawDir\openclaw.json" -Encoding UTF8
             Write-Host "Injected openclaw.json from secret (paths fixed to $rdpUserHome)"
           } else {
