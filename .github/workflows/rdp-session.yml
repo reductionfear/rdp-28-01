@@ -197,6 +197,35 @@ jobs:
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "echo Profile initialized" -Credential $credential -Wait -NoNewWindow -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
           
+          # Fix profile registry to prevent Windows from creating a duplicate
+          # "rdpuser.<machinename>" profile directory on interactive (RDP) logon.
+          # When Start-Process -Credential creates the profile, the registry SID
+          # mapping may not be recognized for interactive logons, so Windows makes
+          # a new profile with a machine-name suffix. Explicitly setting the
+          # ProfileImagePath in the registry prevents this.
+          $userSID = (Get-CimInstance -ClassName Win32_UserAccount -Filter "Name='$username' AND LocalAccount=True").SID
+          if ($userSID) {
+            $profileRegPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$userSID"
+            if (Test-Path $profileRegPath) {
+              $currentProfilePath = (Get-ItemProperty -Path $profileRegPath).ProfileImagePath
+              if ($currentProfilePath -ne $rdpUserHome) {
+                Write-Host "Fixing ProfileImagePath: '$currentProfilePath' -> '$rdpUserHome'"
+                Set-ItemProperty -Path $profileRegPath -Name "ProfileImagePath" -Value $rdpUserHome
+              } else {
+                Write-Host "ProfileImagePath already correct: $rdpUserHome"
+              }
+            } else {
+              # Profile registry entry doesn't exist yet - create it
+              Write-Host "Creating profile registry entry for SID: $userSID"
+              New-Item -Path $profileRegPath -Force | Out-Null
+              Set-ItemProperty -Path $profileRegPath -Name "ProfileImagePath" -Value $rdpUserHome
+              Set-ItemProperty -Path $profileRegPath -Name "Flags" -Value 0 -Type DWord
+              Set-ItemProperty -Path $profileRegPath -Name "State" -Value 0 -Type DWord
+            }
+          } else {
+            Write-Host "WARNING: Could not resolve SID for '$username' - duplicate profile may occur on RDP"
+          }
+          
           # Create all directories
           $dirs = @(
             "$rdpUserHome\projects",
@@ -958,4 +987,3 @@ jobs:
           path: C:\Users\rdpuser\.npm-global
           key: npm-global-openclaw-${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}-${{ runner.os }}
         continue-on-error: true
-
