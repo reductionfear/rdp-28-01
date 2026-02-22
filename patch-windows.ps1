@@ -269,9 +269,9 @@ else {
             contextWindow: 200000,
             maxTokens: 64000,
         },
-        "claude-sonnet-4-6": {
-            id: "claude-sonnet-4-6",
-            name: "Claude Sonnet 4.6 (Antigravity)",
+        "claude-sonnet-4-6-thinking": {
+            id: "claude-sonnet-4-6-thinking",
+            name: "Claude Sonnet 4.6 Thinking (Antigravity)",
             api: "google-gemini-cli",
             provider: "google-antigravity",
             baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
@@ -376,7 +376,7 @@ if (Test-Path $OPENCLAW_JSON) {
             "google-antigravity/gemini-2.5-flash-lite",
             "google-antigravity/gemini-2.5-flash-thinking",
             "google-antigravity/claude-opus-4-6-thinking",
-            "google-antigravity/claude-sonnet-4-6",
+            "google-antigravity/claude-sonnet-4-6-thinking",
             "google-antigravity/gpt-oss-120b-medium"
         )
 
@@ -434,7 +434,7 @@ if (-not (Test-Path $MODELS_JSON)) {
         "gemini-2.5-flash-lite": {},
         "gemini-2.5-flash-thinking": {},
         "claude-opus-4-6-thinking": {},
-        "claude-sonnet-4-6": {},
+        "claude-sonnet-4-6-thinking": {},
         "gpt-oss-120b-medium": {}
       }
     }
