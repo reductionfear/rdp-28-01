@@ -174,7 +174,7 @@ if (-not (Test-Path $MODELS_JS)) { Fail "Not found: $MODELS_JS" }
 
 $modelsContent = Get-Content -Path $MODELS_JS -Raw -Encoding UTF8
 
-if ($modelsContent.Contains('"antigravity-gemini-3-pro"')) {
+if ($modelsContent.Contains('"gemini-3.1-pro-high"')) {
     Warn "models.generated.js -- new models already present, skipping"
 }
 else {
@@ -184,140 +184,54 @@ else {
     else {
         Copy-Item -Path $MODELS_JS -Destination "$MODELS_JS.prepatch.bak" -Force
 
-        # Model IDs sourced from opencode-antigravity-auth plugin v1.6.0
-        # https://github.com/NoeFabris/opencode-antigravity-auth#model-reference
-        #
-        # Antigravity quota models:
-        #   antigravity-gemini-3-pro        (variants: low, high)
-        #   antigravity-gemini-3.1-pro      (variants: low, high)
-        #   antigravity-gemini-3-flash      (variants: minimal, low, medium, high)
-        #   antigravity-claude-sonnet-4-6   (no variants)
-        #   antigravity-claude-opus-4-6-thinking (variants: low, max)
-        #
-        # Gemini CLI quota models (separate quota pool):
-        #   gemini-2.5-flash, gemini-2.5-pro, gemini-3-flash-preview,
-        #   gemini-3-pro-preview, gemini-3.1-pro-preview,
-        #   gemini-3.1-pro-preview-customtools
         $newModels = @'
-        "antigravity-gemini-3-pro": {
-            id: "antigravity-gemini-3-pro",
-            name: "Gemini 3 Pro (Antigravity)",
+        "gemini-3.1-pro-high": {
+            id: "gemini-3.1-pro-high",
+            name: "Gemini 3.1 Pro High",
             api: "google-gemini-cli",
             provider: "google-antigravity",
             baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: true,
             input: ["text", "image"],
             cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-            contextWindow: 1048576,
+            contextWindow: 1000000,
             maxTokens: 65535,
         },
-        "antigravity-gemini-3.1-pro": {
-            id: "antigravity-gemini-3.1-pro",
-            name: "Gemini 3.1 Pro (Antigravity)",
+        "claude-opus-4-6-thinking": {
+            id: "claude-opus-4-6-thinking",
+            name: "Claude Opus 4.6 Thinking",
             api: "google-gemini-cli",
             provider: "google-antigravity",
             baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: true,
             input: ["text", "image"],
             cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-            contextWindow: 1048576,
-            maxTokens: 65535,
+            contextWindow: 114000,
+            maxTokens: 64000,
         },
-        "antigravity-gemini-3-flash": {
-            id: "antigravity-gemini-3-flash",
-            name: "Gemini 3 Flash (Antigravity)",
-            api: "google-gemini-cli",
-            provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
-            reasoning: true,
-            input: ["text", "image"],
-            cost: { input: 0.5, output: 3, cacheRead: 0.5, cacheWrite: 0 },
-            contextWindow: 1048576,
-            maxTokens: 65536,
-        },
-        "antigravity-claude-sonnet-4-6": {
-            id: "antigravity-claude-sonnet-4-6",
-            name: "Claude Sonnet 4.6 (Antigravity)",
+        "claude-sonnet-4-6": {
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
             api: "google-gemini-cli",
             provider: "google-antigravity",
             baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: false,
             input: ["text", "image"],
             cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-            contextWindow: 200000,
+            contextWindow: 114000,
             maxTokens: 64000,
         },
-        "antigravity-claude-opus-4-6-thinking": {
-            id: "antigravity-claude-opus-4-6-thinking",
-            name: "Claude Opus 4.6 Thinking (Antigravity)",
+        "gpt-oss-120b-medium": {
+            id: "gpt-oss-120b-medium",
+            name: "GPT OSS 120B Medium",
             api: "google-gemini-cli",
             provider: "google-antigravity",
             baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
-            reasoning: true,
-            input: ["text", "image"],
-            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-            contextWindow: 200000,
-            maxTokens: 64000,
-        },
-        "gemini-2.5-flash": {
-            id: "gemini-2.5-flash",
-            name: "Gemini 2.5 Flash (Gemini CLI)",
-            api: "google-gemini-cli",
-            provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
-            reasoning: true,
-            input: ["text", "image"],
-            cost: { input: 0.5, output: 3, cacheRead: 0.5, cacheWrite: 0 },
-            contextWindow: 1048576,
-            maxTokens: 65536,
-        },
-        "gemini-2.5-pro": {
-            id: "gemini-2.5-pro",
-            name: "Gemini 2.5 Pro (Gemini CLI)",
-            api: "google-gemini-cli",
-            provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
-            reasoning: true,
+            reasoning: false,
             input: ["text", "image"],
             cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-            contextWindow: 1048576,
+            contextWindow: 1000000,
             maxTokens: 65536,
-        },
-        "gemini-3-flash-preview": {
-            id: "gemini-3-flash-preview",
-            name: "Gemini 3 Flash Preview (Gemini CLI)",
-            api: "google-gemini-cli",
-            provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
-            reasoning: true,
-            input: ["text", "image"],
-            cost: { input: 0.5, output: 3, cacheRead: 0.5, cacheWrite: 0 },
-            contextWindow: 1048576,
-            maxTokens: 65536,
-        },
-        "gemini-3-pro-preview": {
-            id: "gemini-3-pro-preview",
-            name: "Gemini 3 Pro Preview (Gemini CLI)",
-            api: "google-gemini-cli",
-            provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
-            reasoning: true,
-            input: ["text", "image"],
-            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-            contextWindow: 1048576,
-            maxTokens: 65535,
-        },
-        "gemini-3.1-pro-preview": {
-            id: "gemini-3.1-pro-preview",
-            name: "Gemini 3.1 Pro Preview (Gemini CLI)",
-            api: "google-gemini-cli",
-            provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
-            reasoning: true,
-            input: ["text", "image"],
-            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-            contextWindow: 1048576,
-            maxTokens: 65535,
         },
 '@
 
@@ -381,7 +295,7 @@ foreach ($f in $distFiles) {
 }
 
 # =============================================================================
-# 4. openclaw.json -- ensure all models are in allowlist
+# 4. openclaw.json -- ensure correct models in allowlist, remove deprecated ones
 # =============================================================================
 $OPENCLAW_JSON = Join-Path $rdpUserHome ".openclaw\openclaw.json"
 
@@ -392,19 +306,11 @@ if (Test-Path $OPENCLAW_JSON) {
     else {
         $config = Get-Content -Path $OPENCLAW_JSON -Raw -Encoding UTF8 | ConvertFrom-Json
 
-        # Antigravity quota models
-        $modelsToAdd = @(
-            "google-antigravity/antigravity-gemini-3-pro",
-            "google-antigravity/antigravity-gemini-3.1-pro",
-            "google-antigravity/antigravity-gemini-3-flash",
-            "google-antigravity/antigravity-claude-sonnet-4-6",
-            "google-antigravity/antigravity-claude-opus-4-6-thinking",
-            # Gemini CLI quota models
-            "google-antigravity/gemini-2.5-flash",
-            "google-antigravity/gemini-2.5-pro",
-            "google-antigravity/gemini-3-flash-preview",
-            "google-antigravity/gemini-3-pro-preview",
-            "google-antigravity/gemini-3.1-pro-preview"
+        $modelsToKeep = @(
+            "google-antigravity/gemini-3.1-pro-high",
+            "google-antigravity/claude-opus-4-6-thinking",
+            "google-antigravity/claude-sonnet-4-6",
+            "google-antigravity/gpt-oss-120b-medium"
         )
 
         # Ensure nested structure exists
@@ -418,8 +324,20 @@ if (Test-Path $OPENCLAW_JSON) {
             $config.agents.defaults | Add-Member -NotePropertyName "models" -NotePropertyValue ([PSCustomObject]@{}) -Force
         }
 
+        # Remove deprecated google-antigravity models not in the keep list
+        $removed = 0
+        $deprecatedKeys = $config.agents.defaults.models.PSObject.Properties |
+            Where-Object { $_.Name -like "google-antigravity/*" -and $_.Name -notin $modelsToKeep } |
+            ForEach-Object { $_.Name }
+        foreach ($key in $deprecatedKeys) {
+            $config.agents.defaults.models.PSObject.Properties.Remove($key)
+            Warn "openclaw.json -- removed deprecated model: $key"
+            $removed++
+        }
+
+        # Add models that should be present
         $added = 0
-        foreach ($m in $modelsToAdd) {
+        foreach ($m in $modelsToKeep) {
             if (-not $config.agents.defaults.models.PSObject.Properties[$m]) {
                 $config.agents.defaults.models | Add-Member -NotePropertyName $m -NotePropertyValue ([PSCustomObject]@{}) -Force
                 $added++
@@ -427,7 +345,7 @@ if (Test-Path $OPENCLAW_JSON) {
         }
 
         $config | ConvertTo-Json -Depth 20 | Out-File -FilePath $OPENCLAW_JSON -Encoding UTF8
-        Log "openclaw.json allowlist updated (added $added models)"
+        Log "openclaw.json allowlist updated (added $added, removed $removed deprecated)"
     }
 }
 else {
@@ -452,16 +370,10 @@ if (-not (Test-Path $MODELS_JSON)) {
   "providers": {
     "google-antigravity": {
       "modelOverrides": {
-        "antigravity-gemini-3-pro": {},
-        "antigravity-gemini-3.1-pro": {},
-        "antigravity-gemini-3-flash": {},
-        "antigravity-claude-sonnet-4-6": {},
-        "antigravity-claude-opus-4-6-thinking": {},
-        "gemini-2.5-flash": {},
-        "gemini-2.5-pro": {},
-        "gemini-3-flash-preview": {},
-        "gemini-3-pro-preview": {},
-        "gemini-3.1-pro-preview": {}
+        "gemini-3.1-pro-high": {},
+        "claude-opus-4-6-thinking": {},
+        "claude-sonnet-4-6": {},
+        "gpt-oss-120b-medium": {}
       }
     }
   }
