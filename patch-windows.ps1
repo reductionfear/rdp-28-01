@@ -128,10 +128,9 @@ Patch-File -FilePath $GEMINI_CLI `
     -To "antigravity/`${version} $PLATFORM" `
     -Description "google-gemini-cli: platform darwin/arm64 -> $PLATFORM"
 
-Patch-File -FilePath $GEMINI_CLI `
-    -From 'daily-cloudcode-pa.sandbox.googleapis.com' `
-    -To 'daily-cloudcode-pa.googleapis.com' `
-    -Description "google-gemini-cli: sandbox endpoint -> production"
+# NOTE: endpoint left as daily-cloudcode-pa.sandbox.googleapis.com (the working default)
+# Previously we patched this to cloudcode-pa, but the sandbox
+# endpoint is what the mjs fix scripts used when things were working.
 
 # =============================================================================
 # 2. models.generated.js -- add new models
@@ -157,7 +156,7 @@ else {
             name: "Gemini 3.1 Pro High (Antigravity)",
             api: "google-gemini-cli",
             provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: true,
             input: ["text", "image"],
             cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
@@ -169,7 +168,7 @@ else {
             name: "Gemini 3.1 Pro Low (Antigravity)",
             api: "google-gemini-cli",
             provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: true,
             input: ["text", "image"],
             cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
@@ -181,7 +180,7 @@ else {
             name: "Gemini 2.5 Pro (Antigravity)",
             api: "google-gemini-cli",
             provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: true,
             input: ["text", "image"],
             cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
@@ -193,7 +192,7 @@ else {
             name: "Gemini 2.5 Flash (Antigravity)",
             api: "google-gemini-cli",
             provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: true,
             input: ["text", "image"],
             cost: { input: 0.5, output: 3, cacheRead: 0.5, cacheWrite: 0 },
@@ -205,7 +204,7 @@ else {
             name: "Gemini 2.5 Flash Lite (Antigravity)",
             api: "google-gemini-cli",
             provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: false,
             input: ["text", "image"],
             cost: { input: 0.1, output: 0.5, cacheRead: 0.1, cacheWrite: 0 },
@@ -217,7 +216,7 @@ else {
             name: "Gemini 2.5 Flash Thinking (Antigravity)",
             api: "google-gemini-cli",
             provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: true,
             input: ["text", "image"],
             cost: { input: 0.5, output: 3, cacheRead: 0.5, cacheWrite: 0 },
@@ -229,7 +228,7 @@ else {
             name: "Claude Opus 4.6 Thinking (Antigravity)",
             api: "google-gemini-cli",
             provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: true,
             input: ["text", "image"],
             cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
@@ -241,7 +240,7 @@ else {
             name: "Claude Sonnet 4.6 (Antigravity)",
             api: "google-gemini-cli",
             provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: false,
             input: ["text", "image"],
             cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
@@ -253,7 +252,7 @@ else {
             name: "GPT-OSS 120B Medium (Antigravity)",
             api: "google-gemini-cli",
             provider: "google-antigravity",
-            baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+            baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
             reasoning: true,
             input: ["text", "image"],
             cost: { input: 2, output: 8, cacheRead: 0.2, cacheWrite: 0 },
@@ -267,11 +266,11 @@ else {
         $replaceStr = '"google-antigravity": {' + "`n" + $newModels + "`n"
         $modelsContent = $modelsContent.Replace($searchStr, $replaceStr)
 
-        # Also fix sandbox endpoint for existing models
-        $modelsContent = $modelsContent.Replace('daily-cloudcode-pa.sandbox.googleapis.com', 'daily-cloudcode-pa.googleapis.com')
+        # NOTE: sandbox endpoint (daily-cloudcode-pa.sandbox.googleapis.com) is left as-is
+        # for existing models -- this is the working endpoint.
 
         [System.IO.File]::WriteAllText($MODELS_JS, $modelsContent, [System.Text.UTF8Encoding]::new($false))
-        Log "models.generated.js -- added new models + fixed sandbox endpoint"
+        Log "models.generated.js -- added new models (sandbox endpoint preserved)"
     }
 }
 
@@ -303,11 +302,6 @@ $distFiles += Get-ChildItem -Path $DIST -Filter "subagent-registry-*.js" -File -
 
 foreach ($f in $distFiles) {
     $name = $f.Name
-
-    Patch-File -FilePath $f.FullName `
-        -From 'cloudcode-pa.googleapis.com' `
-        -To 'daily-cloudcode-pa.googleapis.com' `
-        -Description "$name`: endpoint -> daily-cloudcode-pa"
 
     Patch-File -FilePath $f.FullName `
         -From 'options?.modelProvider?.toLowerCase().includes("google-antigravity")' `
