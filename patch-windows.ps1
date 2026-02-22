@@ -141,7 +141,7 @@ if ($versionMatch.Success) {
 # Platform: regex match any platform string after antigravity/${version}
 # Re-read in case version patch updated the file
 $geminiContent = Get-Content -Path $GEMINI_CLI -Raw -Encoding UTF8
-$platformPattern = 'antigravity/\$\{version\} (\S+/\S+)'
+$platformPattern = 'antigravity/\$\{version\} ([a-z]+/[a-z0-9]+)'
 $platformMatch = [regex]::Match($geminiContent, $platformPattern)
 if ($platformMatch.Success) {
     $currentPlat = $platformMatch.Groups[1].Value
