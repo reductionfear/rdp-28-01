@@ -296,9 +296,20 @@ else {
 '@
 
         # Insert new models after the google-antigravity provider opening
-        $searchStr = '"google-antigravity": {' + "`n"
-        $replaceStr = '"google-antigravity": {' + "`n" + $newModels + "`n"
-        $modelsContent = $modelsContent.Replace($searchStr, $replaceStr)
+        # Handle both \n and \r\n line endings
+        $searchLF = '"google-antigravity": {' + "`n"
+        $searchCRLF = '"google-antigravity": {' + "`r`n"
+        if ($modelsContent.Contains($searchCRLF)) {
+            $replaceStr = '"google-antigravity": {' + "`r`n" + $newModels + "`r`n"
+            $modelsContent = $modelsContent.Replace($searchCRLF, $replaceStr)
+            Log "models.generated.js -- inserted new models (CRLF)"
+        } elseif ($modelsContent.Contains($searchLF)) {
+            $replaceStr = '"google-antigravity": {' + "`n" + $newModels + "`n"
+            $modelsContent = $modelsContent.Replace($searchLF, $replaceStr)
+            Log "models.generated.js -- inserted new models (LF)"
+        } else {
+            Warn "models.generated.js -- could not find 'google-antigravity' insertion point, models NOT added"
+        }
 
         # NOTE: sandbox endpoint (daily-cloudcode-pa.sandbox.googleapis.com) is left as-is
         # for existing models -- this is the working endpoint.
@@ -436,6 +447,59 @@ if (-not (Test-Path $MODELS_JSON)) {
 }
 else {
     Log "models.json already exists, skipping"
+}
+
+# =============================================================================
+# 6. Validate patched JS files parse correctly
+# =============================================================================
+Write-Host ""
+Write-Host "Validating patched files..."
+
+$filesToValidate = @()
+
+# models.generated.js
+$modelsGenJS = Join-Path $PI_AI_DIR "dist\models.generated.js"
+if (Test-Path $modelsGenJS) { $filesToValidate += $modelsGenJS }
+
+# google-gemini-cli.js
+$geminiCliJS = Join-Path $PI_AI_DIR "dist\providers\google-gemini-cli.js"
+if (Test-Path $geminiCliJS) { $filesToValidate += $geminiCliJS }
+
+$validationFailed = $false
+foreach ($jsFile in $filesToValidate) {
+    $jsName = Split-Path $jsFile -Leaf
+    try {
+        # Read first few bytes to detect if ESM (has import/export)
+        $fileHead = Get-Content -Path $jsFile -TotalCount 5 -ErrorAction SilentlyContinue
+        $headStr = ($fileHead -join "`n")
+        $isESM = $headStr -match '^\s*(import |export )'
+
+        if ($isESM) {
+            # For ESM files, pipe content to node --check --input-type=module
+            $checkResult = Get-Content -Path $jsFile -Raw | & node --check --input-type=module 2>&1
+        } else {
+            $checkResult = & node --check $jsFile 2>&1
+        }
+
+        if ($LASTEXITCODE -eq 0) {
+            Log "Validation OK: $jsName"
+        } else {
+            Write-Host "[X] Validation FAILED: $jsName" -ForegroundColor Red
+            Write-Host $checkResult -ForegroundColor Red
+            $validationFailed = $true
+        }
+    } catch {
+        Write-Host "[X] Validation error for $jsName`: $_" -ForegroundColor Red
+        $validationFailed = $true
+    }
+}
+
+if ($validationFailed) {
+    Write-Host ""
+    Write-Host "[X] One or more patched files have syntax errors! OpenClaw may crash on startup." -ForegroundColor Red
+    Write-Host "    Check the .prepatch.bak files to restore originals." -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
 }
 
 # =============================================================================
