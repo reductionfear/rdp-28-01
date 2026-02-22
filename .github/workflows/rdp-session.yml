@@ -428,6 +428,18 @@ jobs:
           $global:LASTEXITCODE = 0
           Write-Host "OpenClaw configured"
           
+      # ========== PATCH OPENCLAW ==========
+      - name: Patch OpenClaw (Antigravity models + endpoints)
+        shell: pwsh
+        run: |
+          $patchScript = Join-Path $env:GITHUB_WORKSPACE "patch-windows.ps1"
+          if (Test-Path $patchScript) {
+            Write-Host "Running OpenClaw patch script..."
+            & $patchScript
+          } else {
+            Write-Host "WARNING: patch-windows.ps1 not found in repo root -- skipping patching"
+          }
+
       - name: Find previous workspace artifact
         id: find-artifact
         shell: pwsh
