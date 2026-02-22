@@ -113,20 +113,54 @@ if ($DryRun) { Write-Host "DRY RUN MODE -- no files will be modified" -Foregroun
 Write-Host ""
 
 # =============================================================================
-# 1. google-gemini-cli.js -- version, platform, endpoint
+# 1. google-gemini-cli.js -- version, platform
 # =============================================================================
 $GEMINI_CLI = Join-Path $PI_AI_DIR "dist\providers\google-gemini-cli.js"
 if (-not (Test-Path $GEMINI_CLI)) { Fail "Not found: $GEMINI_CLI" }
 
-Patch-File -FilePath $GEMINI_CLI `
-    -From 'const DEFAULT_ANTIGRAVITY_VERSION = "1.15.8"' `
-    -To "const DEFAULT_ANTIGRAVITY_VERSION = `"$ANTIGRAVITY_VERSION`"" `
-    -Description "google-gemini-cli: version 1.15.8 -> $ANTIGRAVITY_VERSION"
+# Version: regex match any semver DEFAULT_ANTIGRAVITY_VERSION
+$geminiContent = Get-Content -Path $GEMINI_CLI -Raw -Encoding UTF8
+$versionPattern = 'const DEFAULT_ANTIGRAVITY_VERSION = "(\d+\.\d+\.\d+)"'
+$versionMatch = [regex]::Match($geminiContent, $versionPattern)
+if ($versionMatch.Success) {
+    $currentVer = $versionMatch.Groups[1].Value
+    if ($currentVer -eq $ANTIGRAVITY_VERSION) {
+        Warn "google-gemini-cli: version already $ANTIGRAVITY_VERSION, skipping"
+    } elseif ($DryRun) {
+        Log "[DRY RUN] Would patch: google-gemini-cli version $currentVer -> $ANTIGRAVITY_VERSION"
+    } else {
+        Copy-Item -Path $GEMINI_CLI -Destination "$GEMINI_CLI.prepatch.bak" -Force
+        $geminiContent = [regex]::Replace($geminiContent, $versionPattern, "const DEFAULT_ANTIGRAVITY_VERSION = `"$ANTIGRAVITY_VERSION`"")
+        [System.IO.File]::WriteAllText($GEMINI_CLI, $geminiContent, [System.Text.UTF8Encoding]::new($false))
+        Log "google-gemini-cli: version $currentVer -> $ANTIGRAVITY_VERSION"
+    }
+} else {
+    Warn "google-gemini-cli: DEFAULT_ANTIGRAVITY_VERSION pattern not found, may need manual update"
+}
 
-Patch-File -FilePath $GEMINI_CLI `
-    -From 'antigravity/${version} darwin/arm64' `
-    -To "antigravity/`${version} $PLATFORM" `
-    -Description "google-gemini-cli: platform darwin/arm64 -> $PLATFORM"
+# Platform: regex match any platform string after antigravity/${version}
+# Re-read in case version patch updated the file
+$geminiContent = Get-Content -Path $GEMINI_CLI -Raw -Encoding UTF8
+$platformPattern = 'antigravity/\$\{version\} (\S+/\S+)'
+$platformMatch = [regex]::Match($geminiContent, $platformPattern)
+if ($platformMatch.Success) {
+    $currentPlat = $platformMatch.Groups[1].Value
+    if ($currentPlat -eq $PLATFORM) {
+        Warn "google-gemini-cli: platform already $PLATFORM, skipping"
+    } elseif ($DryRun) {
+        Log "[DRY RUN] Would patch: google-gemini-cli platform $currentPlat -> $PLATFORM"
+    } else {
+        Copy-Item -Path $GEMINI_CLI -Destination "$GEMINI_CLI.prepatch.bak" -Force
+        # Use string .Replace() to avoid regex $ interpretation issues with ${version}
+        $fromStr = "antigravity/`${version} $currentPlat"
+        $toStr = "antigravity/`${version} $PLATFORM"
+        $geminiContent = $geminiContent.Replace($fromStr, $toStr)
+        [System.IO.File]::WriteAllText($GEMINI_CLI, $geminiContent, [System.Text.UTF8Encoding]::new($false))
+        Log "google-gemini-cli: platform $currentPlat -> $PLATFORM"
+    }
+} else {
+    Warn "google-gemini-cli: platform pattern not found, may need manual update"
+}
 
 # NOTE: endpoint left as daily-cloudcode-pa.sandbox.googleapis.com (the working default)
 # Previously we patched this to cloudcode-pa, but the sandbox
