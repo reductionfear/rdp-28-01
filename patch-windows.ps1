@@ -66,7 +66,7 @@ $geminiCliPath = $geminiCliFiles[0].FullName
 $PI_AI_DIR = $geminiCliPath -replace '\\dist\\providers\\google-gemini-cli\.js$', ''
 
 $DIST = Join-Path $OPENCLAW_DIR "dist"
-$ANTIGRAVITY_VERSION = "1.18.3"
+$ANTIGRAVITY_VERSION = "1.18.4"
 $PLATFORM = "windows/amd64"
 
 # =============================================================================
