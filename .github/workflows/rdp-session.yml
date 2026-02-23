@@ -511,30 +511,36 @@ jobs:
           $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
           $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
           
-          # Install the extension files to a stable path
+          # Point openclaw at rdpuser's state dir so the extension installs there
+          $env:OPENCLAW_STATE_DIR = "$rdpUserHome\.openclaw"
+          
+          # Install the extension files
           Write-Host "Installing OpenClaw browser extension..."
           $installOutput = openclaw browser extension install 2>&1 | Out-String
           Write-Host $installOutput
           
-          # Extract the extension path from the install output.
-          # The command prints a line like: ~\.openclaw\browser\chrome-extension
-          # Expand ~ to the actual rdpuser home directory.
+          # Check all possible locations for the extension directory
+          $candidates = @(
+            "$rdpUserHome\.openclaw\browser\chrome-extension",
+            "$env:USERPROFILE\.openclaw\browser\chrome-extension",
+            "C:\Users\runneradmin\.openclaw\browser\chrome-extension"
+          )
+          
           $extPath = $null
-          foreach ($line in $installOutput -split "`n") {
-            $trimmed = $line.Trim()
-            if ($trimmed -match '\.openclaw[\\/]browser[\\/]chrome-extension') {
-              # Expand ~ to rdpuser home
-              $extPath = $trimmed -replace '^~', $rdpUserHome
+          foreach ($candidate in $candidates) {
+            if (Test-Path $candidate) {
+              $extPath = $candidate
               break
             }
           }
           
-          # Fallback: check the conventional path directly
-          if (-not $extPath -or -not (Test-Path $extPath)) {
-            $fallback = "$rdpUserHome\.openclaw\browser\chrome-extension"
-            if (Test-Path $fallback) {
-              $extPath = $fallback
-            }
+          # If found under runner's home but not rdpuser's, copy it over
+          if ($extPath -and $extPath -ne $candidates[0]) {
+            Write-Host "Extension found at $extPath, copying to rdpuser..."
+            $targetDir = "$rdpUserHome\.openclaw\browser\chrome-extension"
+            New-Item -ItemType Directory -Path (Split-Path $targetDir) -Force | Out-Null
+            Copy-Item -Path $extPath -Destination $targetDir -Recurse -Force
+            $extPath = $targetDir
           }
           
           Write-Host "Extension path resolved to: $extPath"
