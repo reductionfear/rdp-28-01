@@ -462,6 +462,7 @@ jobs:
           $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
           
           Write-Host "Installing Playwright with Chromium for OpenClaw browser tool..."
+          npm install -g playwright
           npx playwright install --with-deps chromium
           Write-Host "Playwright + Chromium installed"
         continue-on-error: true
