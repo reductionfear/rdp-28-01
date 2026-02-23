@@ -24,7 +24,7 @@ env:
 
 jobs:
   rdp-session:
-    runs-on: windows-latest
+    
     timeout-minutes: 360
 
     steps:
@@ -317,11 +317,18 @@ jobs:
           }
           
           # Brave: install for extension relay browser (headed mode via RDP)
-          if (-not (Test-Path "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe")) {
+          $braveCandidates = @(
+            "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "C:\Users\rdpuser\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe"
+          )
+          $braveFound = $braveCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $braveFound) {
             Write-Host "  INSTALL: Brave"
             choco install -y brave --no-progress
           } else {
-            Write-Host "  SKIP: Brave already installed"
+            Write-Host "  SKIP: Brave already installed at $braveFound"
           }
           
           # Install uBlock Origin for Chrome via policy
@@ -557,11 +564,19 @@ jobs:
           # For unpacked extensions loaded via --load-extension, we don't need
           # registry-based installation. Instead, we configure Brave to launch
           # with --load-extension pointing to the extension directory.
-          $bravePath = "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
-          if (-not (Test-Path $bravePath)) {
-            Write-Host "WARNING: Brave not found at $bravePath"
+          $braveCandidates = @(
+            "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "C:\Users\rdpuser\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe"
+          )
+          $bravePath = $braveCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $bravePath) {
+            Write-Host "WARNING: Brave not found in any of these locations:"
+            $braveCandidates | ForEach-Object { Write-Host "  - $_" }
             exit 0
           }
+          Write-Host "Brave found at: $bravePath"
           
           # Create Brave profile directory for openclaw relay usage
           $braveProfileDir = "$rdpUserHome\AppData\Local\BraveSoftware\Brave-Browser\User Data\OpenClaw"
