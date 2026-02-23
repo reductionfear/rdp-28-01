@@ -476,9 +476,31 @@ jobs:
           
           # Install the extension files to a stable path
           Write-Host "Installing OpenClaw browser extension..."
-          openclaw browser extension install 2>&1
-          $extPath = (openclaw browser extension path 2>&1).Trim()
-          Write-Host "Extension installed to: $extPath"
+          $installOutput = openclaw browser extension install 2>&1 | Out-String
+          Write-Host $installOutput
+          
+          # Extract the extension path from the install output.
+          # The command prints a line like: ~\.openclaw\browser\chrome-extension
+          # Expand ~ to the actual rdpuser home directory.
+          $extPath = $null
+          foreach ($line in $installOutput -split "`n") {
+            $trimmed = $line.Trim()
+            if ($trimmed -match '\.openclaw[\\/]browser[\\/]chrome-extension') {
+              # Expand ~ to rdpuser home
+              $extPath = $trimmed -replace '^~', $rdpUserHome
+              break
+            }
+          }
+          
+          # Fallback: check the conventional path directly
+          if (-not $extPath -or -not (Test-Path $extPath)) {
+            $fallback = "$rdpUserHome\.openclaw\browser\chrome-extension"
+            if (Test-Path $fallback) {
+              $extPath = $fallback
+            }
+          }
+          
+          Write-Host "Extension path resolved to: $extPath"
           
           if (-not $extPath -or -not (Test-Path $extPath)) {
             Write-Host "WARNING: Extension path not found, skipping Brave extension setup"
