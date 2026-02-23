@@ -24,7 +24,7 @@ env:
 
 jobs:
   rdp-session:
-    
+    runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
@@ -281,54 +281,95 @@ jobs:
             Write-Host "Chocolatey already available at: $($chocoCmd.Source)"
           }
           
-          # Only install tools that are NOT already on the runner
-          # windows-latest has: Git, Node.js, Python, 7-Zip pre-installed
-          $tools = @(
-            @{ Name = "vscode"; Test = "C:\Program Files\Microsoft VS Code\Code.exe"; Pkg = "vscode.install" },
-            @{ Name = "notepad++"; Test = "C:\Program Files\Notepad++\notepad++.exe"; Pkg = "notepadplusplus" },
-            @{ Name = "firefox"; Test = "C:\Program Files\Mozilla Firefox\firefox.exe"; Pkg = "firefox" },
-            @{ Name = "terminal"; Test = ""; Pkg = "microsoft-windows-terminal" }
-          )
-          
-          $toInstall = @()
-          foreach ($tool in $tools) {
-            if ($tool.Test -and (Test-Path $tool.Test)) {
-              Write-Host "  SKIP: $($tool.Name) already installed"
+          # Helper: try choco first, fall back to direct download
+          function Install-Tool {
+            param($Name, $ChocoPkg, $TestPath, $DirectUrl, $InstallerArgs, $InstallerType)
+            
+            if ($TestPath -and (Test-Path $TestPath)) {
+              Write-Host "  SKIP: $Name already installed"
+              return
+            }
+            
+            Write-Host "  INSTALL: $Name"
+            
+            # Try Chocolatey first
+            choco install -y $ChocoPkg --no-progress 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "  OK: $Name installed via Chocolatey"
+              return
+            }
+            Write-Host "  Chocolatey failed for $Name, trying direct download..."
+            
+            if (-not $DirectUrl) {
+              Write-Host "  WARNING: No direct download URL for $Name, skipping"
+              return
+            }
+            
+            $ext = if ($InstallerType -eq "msi") { ".msi" } else { ".exe" }
+            $installer = "$env:TEMP\$Name-setup$ext"
+            try {
+              [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+              (New-Object System.Net.WebClient).DownloadFile($DirectUrl, $installer)
+              Write-Host "  Downloaded $Name installer"
+            } catch {
+              Write-Host "  WARNING: Direct download failed for $Name - $_"
+              return
+            }
+            
+            if ($InstallerType -eq "msi") {
+              Start-Process msiexec.exe -ArgumentList "/i `"$installer`" $InstallerArgs" -Wait -NoNewWindow
             } else {
-              Write-Host "  INSTALL: $($tool.Name)"
-              $toInstall += $tool.Pkg
+              Start-Process -FilePath $installer -ArgumentList $InstallerArgs -Wait -NoNewWindow
             }
+            Write-Host "  OK: $Name installed via direct download"
+            Remove-Item $installer -Force -ErrorAction SilentlyContinue
           }
           
-          if ($toInstall.Count -gt 0) {
-            $pkgList = $toInstall -join " "
-            Write-Host "Installing: $pkgList"
-            # Retry up to 3 times — Chocolatey CDN returns transient 499 errors
-            $maxRetries = 3
-            for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-              choco install -y $toInstall --no-progress --ignore-dependencies
-              if ($LASTEXITCODE -eq 0) { break }
-              if ($attempt -lt $maxRetries) {
-                Write-Host "Chocolatey install failed (attempt $attempt/$maxRetries), retrying in 15s..."
-                Start-Sleep -Seconds 15
-              } else {
-                Write-Host "WARNING: Chocolatey install failed after $maxRetries attempts"
-              }
-            }
-          } else {
-            Write-Host "All tools already present"
-          }
+          # VS Code
+          Install-Tool -Name "vscode" -ChocoPkg "vscode.install" `
+            -TestPath "C:\Program Files\Microsoft VS Code\Code.exe" `
+            -DirectUrl "https://update.code.visualstudio.com/latest/win32-x64/stable" `
+            -InstallerArgs "/verysilent /norestart /mergetasks=!runcode,addcontextmenufiles,addcontextmenufolders,addtopath" `
+            -InstallerType "exe"
+          
+          # Notepad++
+          Install-Tool -Name "notepad++" -ChocoPkg "notepadplusplus" `
+            -TestPath "C:\Program Files\Notepad++\notepad++.exe" `
+            -DirectUrl "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.7.6/npp.8.7.6.Installer.x64.exe" `
+            -InstallerArgs "/S" `
+            -InstallerType "exe"
+          
+          # Firefox (skip if already installed)
+          Install-Tool -Name "firefox" -ChocoPkg "firefox" `
+            -TestPath "C:\Program Files\Mozilla Firefox\firefox.exe" `
+            -DirectUrl "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=en-US" `
+            -InstallerArgs "-ms" `
+            -InstallerType "exe"
+          
+          # Windows Terminal
+          Install-Tool -Name "terminal" -ChocoPkg "microsoft-windows-terminal" `
+            -TestPath "" `
+            -DirectUrl "" `
+            -InstallerArgs "" `
+            -InstallerType "exe"
           
           # Chrome: install separately with --ignore-checksums (Google updates faster than Chocolatey)
           if (-not (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe")) {
             Write-Host "  INSTALL: Chrome"
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-              choco install -y googlechrome --ignore-checksums --no-progress
-              if ($LASTEXITCODE -eq 0) { break }
-              if ($attempt -lt 3) {
-                Write-Host "Chrome install failed (attempt $attempt/3), retrying in 15s..."
-                Start-Sleep -Seconds 15
+            choco install -y googlechrome --ignore-checksums --no-progress 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "  Chocolatey failed for Chrome, trying direct download..."
+              $chromeInstaller = "$env:TEMP\chrome-setup.exe"
+              try {
+                (New-Object System.Net.WebClient).DownloadFile("https://dl.google.com/chrome/install/latest/chrome_installer.exe", $chromeInstaller)
+                Start-Process -FilePath $chromeInstaller -ArgumentList "/silent /install" -Wait -NoNewWindow
+                Write-Host "  OK: Chrome installed via direct download"
+                Remove-Item $chromeInstaller -Force -ErrorAction SilentlyContinue
+              } catch {
+                Write-Host "  WARNING: Chrome direct download also failed - $_"
               }
+            } else {
+              Write-Host "  OK: Chrome installed via Chocolatey"
             }
           } else {
             Write-Host "  SKIP: Chrome already installed"
@@ -344,13 +385,20 @@ jobs:
           $braveFound = $braveCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $braveFound) {
             Write-Host "  INSTALL: Brave"
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-              choco install -y brave-browser --no-progress
-              if ($LASTEXITCODE -eq 0) { break }
-              if ($attempt -lt 3) {
-                Write-Host "Brave install failed (attempt $attempt/3), retrying in 15s..."
-                Start-Sleep -Seconds 15
+            choco install -y brave-browser --no-progress 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "  Chocolatey failed for Brave, trying direct download..."
+              $braveInstaller = "$env:TEMP\brave-setup.exe"
+              try {
+                (New-Object System.Net.WebClient).DownloadFile("https://laptop-updates.brave.com/latest/winx64", $braveInstaller)
+                Start-Process -FilePath $braveInstaller -ArgumentList "/silent /install" -Wait -NoNewWindow
+                Write-Host "  OK: Brave installed via direct download"
+                Remove-Item $braveInstaller -Force -ErrorAction SilentlyContinue
+              } catch {
+                Write-Host "  WARNING: Brave direct download also failed - $_"
               }
+            } else {
+              Write-Host "  OK: Brave installed via Chocolatey"
             }
           } else {
             Write-Host "  SKIP: Brave already installed at $braveFound"
