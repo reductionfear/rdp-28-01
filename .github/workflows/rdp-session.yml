@@ -385,7 +385,7 @@ jobs:
           $braveFound = $braveCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $braveFound) {
             Write-Host "  INSTALL: Brave"
-            choco install -y brave-browser --no-progress 2>&1 | Out-Null
+            choco install -y brave --no-progress 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
               Write-Host "  Chocolatey failed for Brave, trying direct download..."
               $braveInstaller = "$env:TEMP\brave-setup.exe"
