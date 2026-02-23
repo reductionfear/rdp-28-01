@@ -308,10 +308,23 @@ jobs:
             Write-Host "  SKIP: Chrome already installed"
           }
           
+          # Brave: install for extension relay browser (headed mode via RDP)
+          if (-not (Test-Path "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe")) {
+            Write-Host "  INSTALL: Brave"
+            choco install -y brave --no-progress
+          } else {
+            Write-Host "  SKIP: Brave already installed"
+          }
+          
           # Install uBlock Origin for Chrome via policy
           $chromeExtPath = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
           New-Item -Path $chromeExtPath -Force | Out-Null
           Set-ItemProperty -Path $chromeExtPath -Name "1" -Value "cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx"
+          
+          # Install uBlock Origin for Brave via policy
+          $braveExtPath = "HKLM:\SOFTWARE\Policies\BraveSoftware\Brave\ExtensionInstallForcelist"
+          New-Item -Path $braveExtPath -Force | Out-Null
+          Set-ItemProperty -Path $braveExtPath -Name "1" -Value "cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx"
           
           # Install uBlock Origin for Firefox via policy
           $firefoxExtPath = "HKLM:\SOFTWARE\Policies\Mozilla\Firefox\Extensions\Install"
@@ -440,6 +453,90 @@ jobs:
             Write-Host "WARNING: patch-windows.ps1 not found in repo root -- skipping patching"
           }
 
+      # ========== BROWSER SETUP ==========
+      - name: Install Playwright and Chromium for browser control
+        shell: pwsh
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
+          $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+          
+          Write-Host "Installing Playwright with Chromium for OpenClaw browser tool..."
+          npx playwright install --with-deps chromium
+          Write-Host "Playwright + Chromium installed"
+        continue-on-error: true
+
+      - name: Install OpenClaw browser extension for Brave
+        shell: pwsh
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
+          $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+          
+          # Install the extension files to a stable path
+          Write-Host "Installing OpenClaw browser extension..."
+          openclaw browser extension install 2>&1
+          $extPath = (openclaw browser extension path 2>&1).Trim()
+          Write-Host "Extension installed to: $extPath"
+          
+          if (-not $extPath -or -not (Test-Path $extPath)) {
+            Write-Host "WARNING: Extension path not found, skipping Brave extension setup"
+            exit 0
+          }
+          
+          # Grant rdpuser access to extension files
+          $null = cmd /c "icacls `"$extPath`" /grant rdpuser:(OI)(CI)R /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
+          
+          # For unpacked extensions loaded via --load-extension, we don't need
+          # registry-based installation. Instead, we configure Brave to launch
+          # with --load-extension pointing to the extension directory.
+          $bravePath = "C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+          if (-not (Test-Path $bravePath)) {
+            Write-Host "WARNING: Brave not found at $bravePath"
+            exit 0
+          }
+          
+          # Create Brave profile directory for openclaw relay usage
+          $braveProfileDir = "$rdpUserHome\AppData\Local\BraveSoftware\Brave-Browser\User Data\OpenClaw"
+          New-Item -ItemType Directory -Path $braveProfileDir -Force | Out-Null
+          
+          # Create a desktop shortcut for manual (re)launch
+          $launchLines = @(
+            '@echo off',
+            'REM Launch Brave with OpenClaw extension pre-loaded',
+            'REM One-time: click extension icon then Options then set Gateway Token to openclaw',
+            "start `"`" `"$bravePath`" --load-extension=`"$extPath`" --profile-directory=`"OpenClaw`" --no-first-run --no-default-browser-check"
+          )
+          $launchScript = $launchLines -join "`r`n"
+          $launchScriptPath = "$rdpUserHome\Desktop\Brave-OpenClaw.bat"
+          [System.IO.File]::WriteAllText($launchScriptPath, $launchScript, [System.Text.Encoding]::ASCII)
+          
+          $null = cmd /c "icacls `"$rdpUserHome\Desktop`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
+          
+          # Launch Brave now as rdpuser via scheduled task (Startup folder unreliable in GH Actions RDP)
+          $taskName = "BraveOpenClaw"
+          $batchPath = "$rdpUserHome\start-brave-openclaw.bat"
+          $batchContent = $launchLines -join "`r`n"
+          [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::ASCII)
+          
+          $password = "${{ secrets.RDP_PASSWORD }}"
+          schtasks /Create /TN $taskName /TR $batchPath /SC ONLOGON /RU "rdpuser" /RP $password /RL HIGHEST /F /IT
+          if ($LASTEXITCODE -eq 0) {
+            schtasks /Run /TN $taskName
+            Write-Host "Brave launched via scheduled task with extension loaded"
+          } else {
+            Write-Host "WARNING: Could not create Brave scheduled task, use Desktop shortcut manually"
+          }
+          
+          Write-Host "Brave-OpenClaw setup complete"
+          Write-Host "  Extension path: $extPath"
+          Write-Host "  Brave profile: OpenClaw"
+          Write-Host "  Desktop shortcut: Brave-OpenClaw.bat"
+          Write-Host "  One-time setup: click extension icon > Options > set token to 'openclaw'"
+        continue-on-error: true
+
       - name: Find previous workspace artifact
         id: find-artifact
         shell: pwsh
@@ -498,6 +595,7 @@ jobs:
           
           # Create startup script (with stderr capture for crash diagnosis)
           $scriptContent = '$env:PATH = "C:\Users\rdpuser\.npm-global;" + $env:PATH' + "`r`n"
+          $scriptContent += '$env:PLAYWRIGHT_CHROMIUM_USE_HEADLESS_NEW = "1"' + "`r`n"
           $scriptContent += '$logFile = "C:\Users\rdpuser\.openclaw\gateway-crash.log"' + "`r`n"
           $scriptContent += 'Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "C:\Users\rdpuser\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "C:\Users\rdpuser\.openclaw" -RedirectStandardError $logFile'
           $scriptPath = "$rdpUserHome\start-openclaw.ps1"
@@ -519,6 +617,70 @@ jobs:
           } else {
             Write-Host "WARNING: Could not create scheduled task"
           }
+
+      - name: Start OpenClaw managed browser
+        shell: pwsh
+        run: |
+          $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
+          $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
+          $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+          
+          # Wait for gateway to be ready
+          Write-Host "Waiting for OpenClaw gateway to be ready..."
+          $maxWait = 30
+          $waited = 0
+          while ($waited -lt $maxWait) {
+            try {
+              $resp = Invoke-WebRequest -Uri "http://127.0.0.1:18789/" -UseBasicParsing -TimeoutSec 2 -ErrorAction SilentlyContinue
+              if ($resp.StatusCode -eq 200 -or $resp.StatusCode -eq 401) {
+                Write-Host "Gateway is ready"
+                break
+              }
+            } catch {}
+            Start-Sleep -Seconds 2
+            $waited += 2
+          }
+          
+          Write-Host "Starting OpenClaw managed browser (headless, no-sandbox)..."
+          
+          # Use new headless mode (harder to detect than legacy headless)
+          $env:PLAYWRIGHT_CHROMIUM_USE_HEADLESS_NEW = "1"
+          
+          # Start the openclaw browser profile
+          openclaw browser --browser-profile openclaw start 2>&1
+          Start-Sleep -Seconds 5
+          
+          # Check browser status
+          $browserStatus = openclaw browser --browser-profile openclaw status 2>&1
+          Write-Host "Browser status: $browserStatus"
+          
+          # Verify CDP is reachable on the configured port
+          try {
+            $cdpCheck = Invoke-WebRequest -Uri "http://127.0.0.1:18800/json/version" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+            Write-Host "Browser CDP endpoint is reachable on port 18800"
+            
+            # Apply stealth: set realistic user-agent via browser control API
+            $gatewayPort = 18789
+            $ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            $body = @{ headers = @{ "User-Agent" = $ua } } | ConvertTo-Json -Compress
+            try {
+              Invoke-WebRequest -Uri "http://127.0.0.1:$gatewayPort/browser/set/headers?profile=openclaw" `
+                -Method POST -UseBasicParsing -TimeoutSec 5 `
+                -Headers @{ "Authorization" = "Bearer openclaw"; "Content-Type" = "application/json" } `
+                -Body $body -ErrorAction Stop | Out-Null
+              Write-Host "Stealth: User-Agent set"
+            } catch {
+              Write-Host "WARNING: Could not set User-Agent (non-critical)"
+            }
+            
+            # Apply stealth: set realistic locale and timezone
+            openclaw browser --browser-profile openclaw set locale en-US 2>$null
+            openclaw browser --browser-profile openclaw set timezone America/New_York 2>$null
+            Write-Host "Stealth: locale=en-US, timezone=America/New_York"
+          } catch {
+            Write-Host "WARNING: Browser CDP endpoint not reachable yet (gateway may auto-start it on first use)"
+          }
+        continue-on-error: true
 
       - name: Display Connection Info
         shell: pwsh
@@ -551,6 +713,18 @@ jobs:
           Write-Host "  Workspace: $rdpUserHome\.openclaw\workspace"
           Write-Host "  Start: openclaw gateway"
           Write-Host "  Cache version: ${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}"
+          Write-Host ""
+          Write-Host "Browser (openclaw-managed, headless):"
+          Write-Host "  Profile:   openclaw"
+          Write-Host "  CDP Port:  18800"
+          Write-Host "  Headless:  true"
+          Write-Host "  Sandbox:   disabled (CI environment)"
+          Write-Host ""
+          Write-Host "Browser (Brave extension relay, headed):"
+          Write-Host "  Profile:   chrome (built-in)"
+          Write-Host "  Launcher:  $rdpUserHome\Desktop\Brave-OpenClaw.bat"
+          Write-Host "  Auto-start: on RDP login via Startup folder"
+          Write-Host "  One-time:  click extension icon > Options > set token to 'openclaw'"
           Write-Host ""
           Write-Host "Upgrade openclaw:"
           Write-Host "  Cancel this workflow from GitHub Actions UI"
@@ -746,6 +920,24 @@ jobs:
             }
             # Release process list reference immediately
             $nodeProcs = $null
+            
+            # Check if OpenClaw managed browser CDP is still reachable
+            try {
+              $cdpCheck = Invoke-WebRequest -Uri "http://127.0.0.1:18800/json/version" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+              # Browser is reachable, no action needed
+            } catch {
+              Write-Host "  WARNING: Browser CDP not reachable on port 18800, attempting restart..."
+              $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
+              $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+              openclaw browser --browser-profile openclaw start 2>&1 | Out-Null
+              Start-Sleep -Seconds 5
+              try {
+                Invoke-WebRequest -Uri "http://127.0.0.1:18800/json/version" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop | Out-Null
+                Write-Host "  Browser restarted successfully"
+              } catch {
+                Write-Host "  WARNING: Browser restart may have failed (gateway will retry on next tool call)"
+              }
+            }
             
             # Periodic secret save
             $sinceLastSave = ((Get-Date) - $lastSaveTime).TotalMinutes
