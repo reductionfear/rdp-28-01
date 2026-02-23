@@ -303,7 +303,18 @@ jobs:
           if ($toInstall.Count -gt 0) {
             $pkgList = $toInstall -join " "
             Write-Host "Installing: $pkgList"
-            choco install -y $toInstall --no-progress --ignore-dependencies
+            # Retry up to 3 times — Chocolatey CDN returns transient 499 errors
+            $maxRetries = 3
+            for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+              choco install -y $toInstall --no-progress --ignore-dependencies
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($attempt -lt $maxRetries) {
+                Write-Host "Chocolatey install failed (attempt $attempt/$maxRetries), retrying in 15s..."
+                Start-Sleep -Seconds 15
+              } else {
+                Write-Host "WARNING: Chocolatey install failed after $maxRetries attempts"
+              }
+            }
           } else {
             Write-Host "All tools already present"
           }
@@ -311,7 +322,14 @@ jobs:
           # Chrome: install separately with --ignore-checksums (Google updates faster than Chocolatey)
           if (-not (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe")) {
             Write-Host "  INSTALL: Chrome"
-            choco install -y googlechrome --ignore-checksums --no-progress
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              choco install -y googlechrome --ignore-checksums --no-progress
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($attempt -lt 3) {
+                Write-Host "Chrome install failed (attempt $attempt/3), retrying in 15s..."
+                Start-Sleep -Seconds 15
+              }
+            }
           } else {
             Write-Host "  SKIP: Chrome already installed"
           }
@@ -326,7 +344,14 @@ jobs:
           $braveFound = $braveCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $braveFound) {
             Write-Host "  INSTALL: Brave"
-            choco install -y brave --no-progress
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              choco install -y brave-browser --no-progress
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($attempt -lt 3) {
+                Write-Host "Brave install failed (attempt $attempt/3), retrying in 15s..."
+                Start-Sleep -Seconds 15
+              }
+            }
           } else {
             Write-Host "  SKIP: Brave already installed at $braveFound"
           }
