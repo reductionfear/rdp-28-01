@@ -96,6 +96,13 @@ jobs:
           path: C:\Users\rdpuser\.npm-global
           key: npm-global-openclaw-${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}-${{ runner.os }}
 
+      - name: Restore Playwright browsers cache
+        id: cache-playwright
+        uses: actions/cache/restore@v5
+        with:
+          path: C:\Users\rdpuser\.playwright-browsers
+          key: playwright-browsers-v1-${{ runner.os }}
+
       # ========== TAILSCALE SETUP ==========
       - name: Install Tailscale
         shell: pwsh
@@ -243,6 +250,7 @@ jobs:
           [Environment]::SetEnvironmentVariable("OPENCLAW_STATE_DIR", "$rdpUserHome\.openclaw", "Machine")
           [Environment]::SetEnvironmentVariable("OPENCLAW_WORKSPACE", "$rdpUserHome\.openclaw\workspace", "Machine")
           [Environment]::SetEnvironmentVariable("NPM_CONFIG_PREFIX", "$rdpUserHome\.npm-global", "Machine")
+          [Environment]::SetEnvironmentVariable("PLAYWRIGHT_BROWSERS_PATH", "$rdpUserHome\.playwright-browsers", "Machine")
           
           # Update PATH
           $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -461,10 +469,39 @@ jobs:
           $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
           $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
           
-          Write-Host "Installing Playwright with Chromium for OpenClaw browser tool..."
-          npm install -g playwright
-          npx playwright install --with-deps chromium
-          Write-Host "Playwright + Chromium installed"
+          # Use a stable, cacheable path for Playwright browsers
+          $browsersPath = "$rdpUserHome\.playwright-browsers"
+          $env:PLAYWRIGHT_BROWSERS_PATH = $browsersPath
+          
+          # Install Playwright npm package (covered by npm-global cache)
+          $pwBin = "$rdpUserHome\.npm-global\node_modules\playwright\cli.js"
+          if (-not (Test-Path $pwBin)) {
+            Write-Host "Installing Playwright npm package..."
+            npm install -g playwright
+          } else {
+            Write-Host "Playwright npm package already present (cached)"
+          }
+          
+          # Install Chromium browser binary (covered by playwright-browsers cache)
+          if ("${{ steps.cache-playwright.outputs.cache-hit }}" -eq "true") {
+            # Validate the cached browser is actually usable
+            $chromiumDirs = Get-ChildItem -Path $browsersPath -Directory -Filter "chromium-*" -ErrorAction SilentlyContinue
+            if ($chromiumDirs) {
+              Write-Host "Playwright Chromium restored from cache: $($chromiumDirs[0].Name)"
+            } else {
+              Write-Host "WARNING: Cache hit but no chromium directory found, reinstalling..."
+              npx playwright install --with-deps chromium
+            }
+          } else {
+            Write-Host "Installing Playwright Chromium browser..."
+            npx playwright install --with-deps chromium
+          }
+          
+          # Grant rdpuser access to browser binaries
+          $null = cmd /c "icacls `"$browsersPath`" /grant rdpuser:(OI)(CI)F /T /Q 2>&1"
+          $global:LASTEXITCODE = 0
+          
+          Write-Host "Playwright + Chromium ready at: $browsersPath"
         continue-on-error: true
 
       - name: Install OpenClaw browser extension for Brave
@@ -619,6 +656,7 @@ jobs:
           # Create startup script (with stderr capture for crash diagnosis)
           $scriptContent = '$env:PATH = "C:\Users\rdpuser\.npm-global;" + $env:PATH' + "`r`n"
           $scriptContent += '$env:PLAYWRIGHT_CHROMIUM_USE_HEADLESS_NEW = "1"' + "`r`n"
+          $scriptContent += '$env:PLAYWRIGHT_BROWSERS_PATH = "C:\Users\rdpuser\.playwright-browsers"' + "`r`n"
           $scriptContent += '$logFile = "C:\Users\rdpuser\.openclaw\gateway-crash.log"' + "`r`n"
           $scriptContent += 'Start-Process -WindowStyle Hidden -FilePath "node" -ArgumentList "C:\Users\rdpuser\.npm-global\node_modules\openclaw\openclaw.mjs", "gateway" -WorkingDirectory "C:\Users\rdpuser\.openclaw" -RedirectStandardError $logFile'
           $scriptPath = "$rdpUserHome\start-openclaw.ps1"
@@ -647,6 +685,7 @@ jobs:
           $rdpUserHome = "${{ steps.rdpuser.outputs.RDPUSER_HOME }}"
           $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
           $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+          $env:PLAYWRIGHT_BROWSERS_PATH = "$rdpUserHome\.playwright-browsers"
           
           # Wait for gateway to be ready
           Write-Host "Waiting for OpenClaw gateway to be ready..."
@@ -952,6 +991,7 @@ jobs:
               Write-Host "  WARNING: Browser CDP not reachable on port 18800, attempting restart..."
               $env:NPM_CONFIG_PREFIX = "$rdpUserHome\.npm-global"
               $env:PATH = "$rdpUserHome\.npm-global;$env:PATH"
+              $env:PLAYWRIGHT_BROWSERS_PATH = "$rdpUserHome\.playwright-browsers"
               openclaw browser --browser-profile openclaw start 2>&1 | Out-Null
               Start-Sleep -Seconds 5
               try {
@@ -1213,4 +1253,12 @@ jobs:
         with:
           path: C:\Users\rdpuser\.npm-global
           key: npm-global-openclaw-${{ steps.session.outputs.OPENCLAW_CACHE_VERSION }}-${{ runner.os }}
+        continue-on-error: true
+
+      - name: Save Playwright browsers cache
+        if: ${{ always() && steps.cache-playwright.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: C:\Users\rdpuser\.playwright-browsers
+          key: playwright-browsers-v1-${{ runner.os }}
         continue-on-error: true
