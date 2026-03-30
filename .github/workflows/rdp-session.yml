@@ -596,7 +596,12 @@ jobs:
           
           # Install the extension files
           Write-Host "Installing OpenClaw browser extension..."
-          $installOutput = openclaw browser extension install 2>&1 | Out-String
+          # Check what extension subcommands are available
+          $extHelp = openclaw browser extension --help 2>&1 | Out-String
+          Write-Host "Extension help: $extHelp"
+          
+          # Try the extension command (may just be 'openclaw browser extension' without subcommand)
+          $installOutput = openclaw browser extension 2>&1 | Out-String
           Write-Host $installOutput
           
           # Check all possible locations for the extension directory
@@ -802,12 +807,12 @@ jobs:
           # Use new headless mode (harder to detect than legacy headless)
           $env:PLAYWRIGHT_CHROMIUM_USE_HEADLESS_NEW = "1"
           
-          # Start the openclaw browser profile
-          openclaw browser --browser-profile openclaw start 2>&1
+          # Start the openclaw browser (uses default profile from config)
+          openclaw browser start 2>&1
           Start-Sleep -Seconds 5
           
           # Check browser status
-          $browserStatus = openclaw browser --browser-profile openclaw status 2>&1
+          $browserStatus = openclaw browser status 2>&1
           Write-Host "Browser status: $browserStatus"
           
           # Verify CDP is reachable on the configured port
@@ -830,8 +835,8 @@ jobs:
             }
             
             # Apply stealth: set realistic locale and timezone
-            openclaw browser --browser-profile openclaw set locale en-US 2>$null
-            openclaw browser --browser-profile openclaw set timezone America/New_York 2>$null
+            openclaw browser set locale en-US 2>$null
+            openclaw browser set timezone America/New_York 2>$null
             Write-Host "Stealth: locale=en-US, timezone=America/New_York"
           } catch {
             Write-Host "WARNING: Browser CDP endpoint not reachable yet (gateway may auto-start it on first use)"
@@ -1122,7 +1127,7 @@ jobs:
                     ('$env:PATH = "' + $rdpUserHome + '\.npm-global;" + $env:PATH'),
                     ('$env:PLAYWRIGHT_BROWSERS_PATH = "' + $rdpUserHome + '\.playwright-browsers"'),
                     '$env:PLAYWRIGHT_CHROMIUM_USE_HEADLESS_NEW = "1"',
-                    'openclaw browser --browser-profile openclaw start 2>&1 | Out-Null'
+                    'openclaw browser start 2>&1 | Out-Null'
                   )
                   $scriptLines -join "`r`n" | Out-File -FilePath $taskScript -Encoding UTF8 -Force
                   $batchWrapper = "$rdpUserHome\start-browser.bat"
@@ -1144,7 +1149,7 @@ jobs:
               } elseif ($script:browserFailCount -eq 4) {
                 Write-Host "  Browser CDP failed 3 restart attempts - giving up automatic restarts."
                 Write-Host "  The gateway will auto-start the browser on the next browser tool call."
-                Write-Host "  Or RDP in and run: openclaw browser --browser-profile openclaw start"
+                Write-Host "  Or RDP in and run: openclaw browser start"
               }
               # After giving up, stay silent (no spam every 60s)
             }
